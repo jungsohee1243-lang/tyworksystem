@@ -1397,7 +1397,7 @@ def kd_replace_delivery_terms(df):
         s = kd_norm_str(x)
         return replace_map.get(s, x)
 
-    return df.applymap(convert_cell)
+    return df.map(convert_cell)
 
 def kyungdong_page():
     topbar()
