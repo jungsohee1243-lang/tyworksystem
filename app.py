@@ -1098,7 +1098,7 @@ def login_page():
         <div class="title">업무 자동화 시스템</div>
         <div class="desc">전자상거래 · 3PL · 씨앤에어 업무를 한 곳에서 처리합니다.<br>파일 변환, 검증, 현장 운영 자료를 빠르게 자동화합니다.</div>
         <div class="logo-box">{logo_html}</div>
-        <div class="version">TY LOGIS Internal System · v22.8</div>
+        <div class="version">TY LOGIS Internal System · v23.0</div>
         """, unsafe_allow_html=True)
     with right:
         st.markdown('<div class="login-title">로그인</div><div class="login-sub">계정과 비밀번호를 입력하세요.</div>', unsafe_allow_html=True)
@@ -1123,7 +1123,7 @@ def topbar():
     }
     page_name = page_map.get(st.session_state.page, "메인 대시보드")
     st.markdown(f"""
-    <div class="topbar"><div><div class="topbar-title">TY LOGIS 업무 자동화 시스템</div><div class="topbar-sub">접속 계정: {st.session_state.user} · {page_name}</div></div><div class="badge">v22.8</div></div>
+    <div class="topbar"><div><div class="topbar-title">TY LOGIS 업무 자동화 시스템</div><div class="topbar-sub">접속 계정: {st.session_state.user} · {page_name}</div></div><div class="badge">v23.0</div></div>
     """, unsafe_allow_html=True)
 
 
@@ -1592,10 +1592,7 @@ def kyungdong_page():
                 if e_list:
                     for e in e_list:
                         rr = base_row(r)
-                        try:
-                            rr["HBL NO"] = int(kd_norm_str(e))
-                        except:
-                            rr["HBL NO"] = kd_norm_str(e)
+                        rr["HBL NO"] = kd_norm_str(e)
                         rows.append(rr)
                 else:
                     rr = base_row(r)
@@ -1709,7 +1706,7 @@ def kyungdong_page():
                 if e_list:
                     for e in e_list:
                         rr = make_row(r)
-                        rr[waybill_col] = kd_set_number_like_original(e)
+                        rr[waybill_col] = kd_norm_str(e)
                         rows.append(rr)
                 else:
                     for _ in range(repeat_count):
@@ -2065,7 +2062,9 @@ def meni_convert_page():
     if uploaded:
         if st.button("✅ 메니변환 실행", type="primary", use_container_width=True, key="meni_run"):
             try:
-                result_bytes, summary = meni_process_excel_to_bytes(uploaded, target_total=target_total)
+                with st.spinner("메니변환 처리 중입니다. 파일 용량에 따라 10초~1분 정도 걸릴 수 있어요..."):
+                    result_bytes, summary = meni_process_excel_to_bytes(uploaded, target_total=target_total)
+
                 st.success("메니변환 완료")
 
                 st.write("처리 요약")
@@ -2081,6 +2080,7 @@ def meni_convert_page():
                 )
             except Exception as e:
                 st.error(f"처리 중 오류가 발생했습니다: {e}")
+                st.exception(e)
     else:
         st.info("엑셀 파일을 업로드하면 메니변환을 실행할 수 있습니다.")
 
