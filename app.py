@@ -1098,7 +1098,7 @@ def login_page():
         <div class="title">업무 자동화 시스템</div>
         <div class="desc">전자상거래 · 3PL · 씨앤에어 업무를 한 곳에서 처리합니다.<br>파일 변환, 검증, 현장 운영 자료를 빠르게 자동화합니다.</div>
         <div class="logo-box">{logo_html}</div>
-        <div class="version">TY LOGIS Internal System · v22.4</div>
+        <div class="version">TY LOGIS Internal System · v22.6</div>
         """, unsafe_allow_html=True)
     with right:
         st.markdown('<div class="login-title">로그인</div><div class="login-sub">계정과 비밀번호를 입력하세요.</div>', unsafe_allow_html=True)
@@ -1123,7 +1123,7 @@ def topbar():
     }
     page_name = page_map.get(st.session_state.page, "메인 대시보드")
     st.markdown(f"""
-    <div class="topbar"><div><div class="topbar-title">TY LOGIS 업무 자동화 시스템</div><div class="topbar-sub">접속 계정: {st.session_state.user} · {page_name}</div></div><div class="badge">v22.4</div></div>
+    <div class="topbar"><div><div class="topbar-title">TY LOGIS 업무 자동화 시스템</div><div class="topbar-sub">접속 계정: {st.session_state.user} · {page_name}</div></div><div class="badge">v22.6</div></div>
     """, unsafe_allow_html=True)
 
 
@@ -1584,9 +1584,9 @@ def kyungdong_page():
                 def base_row(rr):
                     rr = rr.copy()
                     if "BOX 수량" in rr.index:
-                        rr.loc["BOX 수량"] = 1
+                        rr.loc["BOX 수량"] = "1"
                     if per is not None and "중량" in rr.index:
-                        rr.loc["중량"] = round(per, 3)
+                        rr.loc["중량"] = str(round(per, 3))
                     return rr
 
                 if e_list:
@@ -1701,9 +1701,9 @@ def kyungdong_page():
                 def make_row(rr):
                     rr = rr.copy()
                     if "C/T" in rr.index:
-                        rr.loc["C/T"] = 1
+                        rr.loc["C/T"] = "1"
                     if per_wt is not None and "W/T" in rr.index:
-                        rr.loc["W/T"] = round(per_wt, 3)
+                        rr.loc["W/T"] = str(round(per_wt, 3))
                     return rr
 
                 if e_list:
