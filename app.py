@@ -1098,7 +1098,7 @@ def login_page():
         <div class="title">업무 자동화 시스템</div>
         <div class="desc">전자상거래 · 3PL · 씨앤에어 업무를 한 곳에서 처리합니다.<br>파일 변환, 검증, 현장 운영 자료를 빠르게 자동화합니다.</div>
         <div class="logo-box">{logo_html}</div>
-        <div class="version">TY LOGIS Internal System · v22.6</div>
+        <div class="version">TY LOGIS Internal System · v22.8</div>
         """, unsafe_allow_html=True)
     with right:
         st.markdown('<div class="login-title">로그인</div><div class="login-sub">계정과 비밀번호를 입력하세요.</div>', unsafe_allow_html=True)
@@ -1123,7 +1123,7 @@ def topbar():
     }
     page_name = page_map.get(st.session_state.page, "메인 대시보드")
     st.markdown(f"""
-    <div class="topbar"><div><div class="topbar-title">TY LOGIS 업무 자동화 시스템</div><div class="topbar-sub">접속 계정: {st.session_state.user} · {page_name}</div></div><div class="badge">v22.6</div></div>
+    <div class="topbar"><div><div class="topbar-title">TY LOGIS 업무 자동화 시스템</div><div class="topbar-sub">접속 계정: {st.session_state.user} · {page_name}</div></div><div class="badge">v22.8</div></div>
     """, unsafe_allow_html=True)
 
 
@@ -1851,7 +1851,7 @@ def meni_distribute_to_target(df, col_af, target_total):
     return df, new_total, distributed
 
 def meni_process_excel_to_bytes(uploaded_file, target_total=None):
-    df = pd.read_excel(uploaded_file)
+    df = pd.read_excel(uploaded_file).astype("object")
 
     col_hs    = meni_find_column_name(df.columns, "허용품목코드")
     col_zip   = meni_find_column_name(df.columns, "ZIP CODE")
@@ -1896,7 +1896,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     wireless_mask = (v_before_str == "1") & df[col_desc1].astype(str).apply(
         lambda x: any(term.upper() in str(x).upper() for term in MENI_WIRELESS_TERMS)
     )
-    df.loc[wireless_mask, col_v] = 3
+    df.loc[wireless_mask, col_v] = "3"
     rows_v_blue = df.index[wireless_mask].tolist()
     wireless_changed_cnt = int(wireless_mask.sum())
     wireless_ratio_all = (wireless_changed_cnt / len(df) * 100) if len(df) else 0.0
@@ -1910,7 +1910,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         return any(kw.upper() in t for kw in MENI_KEYWORDS_V)
 
     mask_v = df.apply(lambda r: match_v(r[col_desc1], r[col_v]), axis=1)
-    df.loc[mask_v, col_v] = 3
+    df.loc[mask_v, col_v] = "3"
     rows_v_red = df.index[mask_v].tolist()
 
     w = pd.to_numeric(df[col_af], errors="coerce")
@@ -1942,7 +1942,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
 
     mask_phone_rule = mask_v1 & tel.isin(bad_tels)
     rows_v_orange = df.index[mask_phone_rule].tolist()
-    df.loc[mask_phone_rule, col_v] = 3
+    df.loc[mask_phone_rule, col_v] = "3"
     hawb_list = df.loc[mask_phone_rule, col_hawb].astype(str).tolist()
 
     v_after_str = df[col_v].astype(str).str.strip()
