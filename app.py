@@ -3,6 +3,8 @@ import os
 import re
 import string
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import threading
 
 import pandas as pd
 import requests
@@ -1698,6 +1700,7 @@ def address_verify_page():
         st.write("- 엑셀은 최소 2개 컬럼이 필요합니다. 예: 송장 / 주소")
         st.write("- 카카오 REST API 키를 입력한 뒤 엑셀을 업로드하세요.")
         st.write("- 결과는 전체결과, 정상, 오류 시트로 나누어 다운로드됩니다.")
+        st.write("- 빠른 검증 모드는 중복 주소를 한 번만 조회하고, 여러 건을 동시에 처리합니다.")
 
     kakao_api_key = st.text_input(
         "카카오 REST API 키",
@@ -1742,19 +1745,66 @@ def address_verify_page():
     st.markdown('<div class="section-title">미리보기</div>', unsafe_allow_html=True)
     st.dataframe(df[[invoice_col, address_col]].head(20), use_container_width=True)
 
+    unique_count = df[address_col].astype(str).nunique(dropna=False)
+    total_count = len(df)
+    c_speed1, c_speed2 = st.columns(2)
+    with c_speed1:
+        max_workers = st.slider("동시 처리 개수", min_value=1, max_value=10, value=6, step=1, help="값이 높을수록 빠르지만, 너무 높으면 카카오 API 호출 제한이 걸릴 수 있습니다.")
+    with c_speed2:
+        st.metric("실제 조회할 고유 주소 수", f"{unique_count:,} / {total_count:,}")
+
     if st.button("✅ 주소 검증 실행", type="primary", use_container_width=True, key="addr_run"):
-        session = requests.Session()
         progress = st.progress(0)
         status = st.empty()
+        results_by_addr = {}
         results = []
-        total = len(df)
+        total_unique = unique_count
 
-        for pos, (_, row) in enumerate(df.iterrows(), start=1):
-            status.text(f"처리 중... {pos} / {total}")
-            r = classify_kakao_result(row[address_col], kakao_api_key, session)
+        thread_local = threading.local()
+
+        def get_session():
+            if not hasattr(thread_local, "session"):
+                thread_local.session = requests.Session()
+            return thread_local.session
+
+        def worker(raw_addr):
+            return raw_addr, classify_kakao_result(raw_addr, kakao_api_key, get_session())
+
+        unique_addresses = list(dict.fromkeys(df[address_col].astype(str).tolist()))
+        done = 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_map = {executor.submit(worker, addr): addr for addr in unique_addresses}
+            for future in as_completed(future_map):
+                addr = future_map[future]
+                try:
+                    raw_addr, r = future.result()
+                except Exception as e:
+                    raw_addr = addr
+                    r = {
+                        "원본주소": addr, "조회주소": "", "판정": "오류",
+                        "도로명주소": "", "지번주소": "", "위도": "", "경도": "",
+                        "오류사유": f"처리 오류: {e}"
+                    }
+                results_by_addr[raw_addr] = r
+                done += 1
+                if done == total_unique or done % 20 == 0:
+                    status.text(f"처리 중... 고유주소 {done:,} / {total_unique:,}건")
+                    progress.progress(done / total_unique)
+
+        status.text("결과 정리 중...")
+        for _, row in df.iterrows():
+            addr_key = str(row[address_col])
+            r = dict(results_by_addr.get(addr_key, {
+                "원본주소": row[address_col], "조회주소": "", "판정": "오류",
+                "도로명주소": "", "지번주소": "", "위도": "", "경도": "",
+                "오류사유": "결과 매칭 실패"
+            }))
             r["송장"] = row[invoice_col]
             results.append(r)
-            progress.progress(pos / total)
+
+        progress.progress(1.0)
+        status.text("완료")
 
         result_df = pd.DataFrame(results)[["송장", "원본주소", "조회주소", "판정", "도로명주소", "지번주소", "위도", "경도", "오류사유"]]
         ok_df = result_df[result_df["판정"] == "정상"].copy()

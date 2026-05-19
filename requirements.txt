@@ -1,4 +1,6 @@
 streamlit
 pandas
+requests
 openpyxl
+xlsxwriter
 pdfplumber
