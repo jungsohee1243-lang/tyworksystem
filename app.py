@@ -5,6 +5,7 @@ import string
 from datetime import datetime
 
 import pandas as pd
+import requests
 import pdfplumber
 import streamlit as st
 from openpyxl import load_workbook
@@ -1027,6 +1028,463 @@ def make_excel(df):
     output.seek(0)
     return output.getvalue()
 
+KAKAO_API_URL = "https://dapi.kakao.com/v2/local/search/address.json"
+
+HOUSE_NUM = r"\d{1,4}(?:-\d{1,4})?"
+ADMIN_JIBUN = r"(?:동|리|면|읍|가)"
+ROAD_SUFFIX = r"(?:로|길|대로|거리)"
+
+GENERAL_ROAD_PATTERN = rf"[0-9가-힣A-Za-z\.]+{ROAD_SUFFIX}\s*{HOUSE_NUM}"
+COMPLEX_ROAD_PATTERNS = [
+    rf"[0-9가-힣A-Za-z\.]+로\s*\d+[가-힣]?(?:번길|번로|길)\s*{HOUSE_NUM}",
+    rf"[0-9가-힣A-Za-z\.]+로\d+[가-힣]?(?:번길|번로|길)\s*{HOUSE_NUM}",
+    rf"[0-9가-힣A-Za-z\.]+길\s*\d+(?:번길|번로)\s*{HOUSE_NUM}",
+    rf"[0-9가-힣A-Za-z\.]+길\d+(?:번길|번로)\s*{HOUSE_NUM}",
+    rf"[0-9가-힣A-Za-z\.]+대로\s*\d+(?:번길|번로)\s*{HOUSE_NUM}",
+    rf"[0-9가-힣A-Za-z\.]+대로\d+(?:번길|번로)\s*{HOUSE_NUM}",
+    rf"[0-9가-힣A-Za-z\.]+거리\s*\d+(?:번길|번로)\s*{HOUSE_NUM}",
+    rf"[0-9가-힣A-Za-z\.]+거리\d+(?:번길|번로)\s*{HOUSE_NUM}",
+]
+JIBUN_PATTERN = rf"[0-9가-힣A-Za-z\.]+{ADMIN_JIBUN}\s*{HOUSE_NUM}(?:번지)?"
+
+APT_KEYWORDS = [
+    "아파트", "APT", "Apartment", "APARTMENT", "타워", "빌라", "맨션", "하우스",
+    "래미안", "푸르지오", "자이", "힐스테이트", "아이파크", "e편한세상", "롯데캐슬", "더샵",
+    "센트럴파크", "트리플시티", "리버파크", "스카이", "시티", "주공", "LH", "현대", "삼성",
+    "대림", "대우", "경남", "쌍용", "SK", "SK뷰", "서희", "휴먼시아", "임광", "롯데캐슬"
+]
+APT_NAME_RE = re.compile("|".join(re.escape(x) for x in APT_KEYWORDS), re.IGNORECASE)
+DONG_HO_RE = re.compile(r"\b\d+\s*동\b.*\b\d+\s*호\b|\b\d+\s*호\b|\b\d+\s*동\b")
+NUM_UNIT_RE = re.compile(r"\b\d{1,4}\s*-\s*\d{1,4}\b")
+
+REGION_HINTS_ORDERED = [
+    ("chungcheongbuk-do", "충청북도"),
+    ("chungcheongnam-do", "충청남도"),
+    ("gyeongsangbuk-do", "경상북도"),
+    ("gyeongsangnam-do", "경상남도"),
+    ("changnyeong-gun", "창녕군"),
+    ("jeungpyeong-gun", "증평군"),
+    ("yeongdeungpo-gu", "영등포구"),
+    ("cheongyang-gun", "청양군"),
+    ("dongducheon-si", "동두천시"),
+    ("masanhoewon-gu", "마산회원구"),
+    ("yangpyeong-gun", "양평군"),
+    ("dongdaemun-gu", "동대문구"),
+    ("hampyeong-gun", "함평군"),
+    ("hongcheon-gun", "홍천군"),
+    ("hongseong-gun", "홍성군"),
+    ("jangheung-gun", "장흥군"),
+    ("pyeongtaek-si", "평택시"),
+    ("sancheong-gun", "산청군"),
+    ("yeongcheon-si", "영천시"),
+    ("yeongdeok-gun", "영덕군"),
+    ("cheongwon-gu", "청원구"),
+    ("cheorwon-gun", "철원군"),
+    ("dalseong-gun", "달성군"),
+    ("eumseong-gun", "음성군"),
+    ("eunpyeong-gu", "은평구"),
+    ("gangneung-si", "강릉시"),
+    ("gapyeong-gun", "가평군"),
+    ("geochang-gun", "거창군"),
+    ("geumcheon-gu", "금천구"),
+    ("geumjeong-gu", "금정구"),
+    ("goryeong-gun", "고령군"),
+    ("gyeongsan-si", "경산시"),
+    ("hapcheon-gun", "합천군"),
+    ("heungdeok-gu", "흥덕구"),
+    ("ilsandong-gu", "일산동구"),
+    ("jeollabuk-do", "전라북도"),
+    ("namyangju-si", "남양주시"),
+    ("seodaemun-gu", "서대문구"),
+    ("seongdong-gu", "성동구"),
+    ("sunchang-gun", "순창군"),
+    ("uijeongbu-si", "의정부시"),
+    ("yangcheon-gu", "양천구"),
+    ("yeongtong-gu", "영통구"),
+    ("bupyeong-gu", "부평구"),
+    ("changwon-si", "창원시"),
+    ("cheongju-si", "청주시"),
+    ("chilgok-gun", "칠곡군"),
+    ("deogyang-gu", "덕양구"),
+    ("gangdong-gu", "강동구"),
+    ("ganghwa-gun", "강화군"),
+    ("goheung-gun", "고흥군"),
+    ("gwacheon-si", "과천시"),
+    ("gwangsan-gu", "광산구"),
+    ("gwonseon-gu", "권선구"),
+    ("gyeonggi-do", "경기도"),
+    ("gyeongju-si", "경주시"),
+    ("haeundae-gu", "해운대구"),
+    ("hwaseong-si", "화성시"),
+    ("ilsanseo-gu", "일산서구"),
+    ("jungnang-gu", "중랑구"),
+    ("michuhol-gu", "미추홀구"),
+    ("sangdang-gu", "상당구"),
+    ("seongbuk-gu", "성북구"),
+    ("seongju-gun", "성주군"),
+    ("seongnam-si", "성남시"),
+    ("seongsan-gu", "성산구"),
+    ("suncheon-si", "순천시"),
+    ("yecheon-gun", "예천군"),
+    ("yeongam-gun", "영암군"),
+    ("anseong-si", "안성시"),
+    ("bucheon-si", "부천시"),
+    ("bundang-gu", "분당구"),
+    ("cheonan-si", "천안시"),
+    ("chungju-si", "충주시"),
+    ("daedeok-gu", "대덕구"),
+    ("dangjin-si", "당진시"),
+    ("deokjin-gu", "덕진구"),
+    ("donghae-si", "동해시"),
+    ("dongjak-gu", "동작구"),
+    ("dongnae-gu", "동래구"),
+    ("dongnam-gu", "동남구"),
+    ("dongtan-gu", "동탄구"),
+    ("eojin-dong", "어진동"),
+    ("gangnam-gu", "강남구"),
+    ("gangseo-gu", "강서구"),
+    ("gangwon-do", "강원도"),
+    ("giheung-gu", "기흥구"),
+    ("gijang-gun", "기장군"),
+    ("gyeyang-gu", "계양구"),
+    ("jeonbuk-do", "전북도"),
+    ("jungwon-gu", "중원구"),
+    ("miryang-si", "밀양시"),
+    ("namdong-gu", "남동구"),
+    ("namhae-gun", "남해군"),
+    ("pocheon-si", "포천시"),
+    ("sangnok-gu", "상록구"),
+    ("siheung-si", "시흥시"),
+    ("suseong-gu", "수성구"),
+    ("yanggu-gun", "양구군"),
+    ("yangsan-si", "양산시"),
+    ("yeongdo-gu", "영도구"),
+    ("yeongju-si", "영주시"),
+    ("yongsan-gu", "용산구"),
+    ("yuseong-gu", "유성구"),
+    ("andong-si", "안동시"),
+    ("anyang-si", "안양시"),
+    ("cheoin-gu", "처인구"),
+    ("dalseo-gu", "달서구"),
+    ("danwon-gu", "단원구"),
+    ("dobong-gu", "도봉구"),
+    ("dongan-gu", "동안구"),
+    ("gimhae-si", "김해시"),
+    ("gongju-si", "공주시"),
+    ("goyang-si", "고양시"),
+    ("gwanak-gu", "관악구"),
+    ("haman-gun", "함안군"),
+    ("icheon-si", "이천시"),
+    ("jangan-gu", "장안구"),
+    ("jeonju-si", "전주시"),
+    ("jinhae-gu", "진해구"),
+    ("jongno-gu", "종로구"),
+    ("nonsan-si", "논산시"),
+    ("paldal-gu", "팔달구"),
+    ("pohang-si", "포항시"),
+    ("sasang-gu", "사상구"),
+    ("sejong-si", "세종시"),
+    ("seobuk-gu", "서북구"),
+    ("seocho-gu", "서초구"),
+    ("seowon-gu", "서원구"),
+    ("sokcho-si", "속초시"),
+    ("songpa-gu", "송파구"),
+    ("uljin-gun", "울진군"),
+    ("wanju-gun", "완주군"),
+    ("wansan-gu", "완산구"),
+    ("yangju-si", "양주시"),
+    ("yeonsu-gu", "연수구"),
+    ("yongin-si", "용인시"),
+    ("ansan-si", "안산시"),
+    ("geoje-si", "거제시"),
+    ("gimje-si", "김제시"),
+    ("gimpo-si", "김포시"),
+    ("gunpo-si", "군포시"),
+    ("hanam-si", "하남시"),
+    ("iksan-si", "익산시"),
+    ("jinju-si", "진주시"),
+    ("manan-gu", "만안구"),
+    ("mokpo-si", "목포시"),
+    ("suwon-si", "수원시"),
+    ("ulju-gun", "울주군"),
+    ("wonju-si", "원주시"),
+    ("wonmi-gu", "원미구"),
+    ("yeoju-si", "여주시"),
+    ("yeosu-si", "여수시"),
+    ("asan-si", "아산시"),
+    ("daejeon", "대전"),
+    ("dong-gu", "동구"),
+    ("dongtan", "동탄"),
+    ("gumi-si", "구미시"),
+    ("guro-gu", "구로"),
+    ("gwangju", "광주"),
+    ("incheon", "인천"),
+    ("jung-gu", "중구"),
+    ("mapo-gu", "마포구"),
+    ("naju-si", "나주시"),
+    ("osan-si", "오산시"),
+    ("paju-si", "파주시"),
+    ("saha-gu", "사하구"),
+    ("sosa-gu", "소사구"),
+    ("suji-gu", "수지구"),
+    ("buk-gu", "북구"),
+    ("nam-gu", "남구"),
+    ("pohang", "포항"),
+    ("seo-gu", "서구"),
+    ("yongin", "용인"),
+    ("ansan", "안산"),
+    ("busan", "부산"),
+    ("daegu", "대구"),
+    ("ulsan", "울산"),
+]
+
+ROAD_PARTS = ["로", "길", "대로", "거리"]
+ADMIN_PARTS = ["동", "리", "면", "읍", "가", "시", "군", "구", "도"]
+
+def detect_columns(df: pd.DataFrame) -> Tuple[str, str]:
+    cols = list(df.columns)
+    if len(cols) < 2:
+        raise ValueError("엑셀에 최소 2개 컬럼이 필요합니다. (송장, 주소)")
+    invoice_candidates = ["송장", "송장번호", "HAWB", "HAWB NO", "운송장", "invoice", "Invoice"]
+    address_candidates = ["주소", "Address", "address", "收件地址", "地址"]
+    invoice_col = next((c for c in invoice_candidates if c in df.columns), cols[0])
+    address_col = next((c for c in address_candidates if c in df.columns), cols[1])
+    return invoice_col, address_col
+
+def compact_korean_spacing(text: str) -> str:
+    s = str(text)
+
+    s = re.sub(r"(\d+\.\d+)\s*([가-힣]+로)", r"\1\2", s)
+    s = re.sub(r"(\d+)\s*([가-힣]+로)", r"\1\2", s)
+
+    for suffix in ROAD_PARTS + ADMIN_PARTS:
+        pattern = rf"((?:[가-힣]\s+){1,10}){suffix}\b"
+        while True:
+            m = re.search(pattern, s)
+            if not m:
+                break
+            prefix = re.sub(r"\s+", "", m.group(1))
+            s = s[:m.start()] + prefix + suffix + s[m.end():]
+
+    s = re.sub(r"([가-힣]+)\s+([가-힣]+로)\b", r"\1\2", s)
+    s = re.sub(r"([가-힣]+)\s+([가-힣]+길)\b", r"\1\2", s)
+    s = re.sub(r"([가-힣]+)\s+([가-힣]+대로)\b", r"\1\2", s)
+
+    s = re.sub(r"([가-힣]+)\s*로\s*(\d+)\s*([가-힣]?)\s*길", r"\1로\2\3길", s)
+    s = re.sub(r"([가-힣]+)\s*로\s*(\d+)\s*번\s*길", r"\1로 \2번길", s)
+    s = re.sub(r"([가-힣]+)\s*로\s*(\d+)\s*번\s*로", r"\1로 \2번로", s)
+    s = re.sub(r"([가-힣]+)\s*길\s*(\d+)\s*번\s*길", r"\1길 \2번길", s)
+    s = re.sub(r"([가-힣]+)\s*대로\s*(\d+)\s*번\s*길", r"\1대로 \2번길", s)
+
+    s = re.sub(r"(\d+[가-힣]?(?:번길|번로|길))\s*(" + HOUSE_NUM + r")", r"\1 \2", s)
+    s = re.sub(r"(" + ROAD_SUFFIX + r")\s*(" + HOUSE_NUM + r")", r"\1 \2", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+def is_apt_only(addr: str) -> bool:
+    a = compact_korean_spacing(str(addr))
+    has_road = re.search(GENERAL_ROAD_PATTERN, a) is not None
+    has_jibun = re.search(JIBUN_PATTERN, a) is not None
+    has_complex = any(re.search(p, a) is not None for p in COMPLEX_ROAD_PATTERNS)
+    if has_road or has_jibun or has_complex:
+        return False
+    has_apt_name = APT_NAME_RE.search(a) is not None
+    has_dongho = DONG_HO_RE.search(a) is not None or NUM_UNIT_RE.search(a) is not None
+    return has_apt_name or has_dongho
+
+def strip_room_only_tail(text: str) -> str:
+    s = str(text).strip()
+    s = re.sub(r"(\b" + HOUSE_NUM + r")[- ]\d{1,4}호\b", r"\1", s)
+    s = re.sub(r"\b\d+\s*동\s*\d+\s*호\b", "", s)
+    s = re.sub(r"\b\d+\s*호\b", "", s)
+    s = re.sub(r"\s{2,}", " ", s).strip(" ,")
+    return s
+
+def extract_core_korean_address(addr: str) -> Optional[str]:
+    a = compact_korean_spacing(str(addr))
+    a = strip_room_only_tail(a)
+
+    for pattern in COMPLEX_ROAD_PATTERNS:
+        m = re.search(pattern, a)
+        if m:
+            return m.group(0).strip()
+
+    road_match = re.search(GENERAL_ROAD_PATTERN, a)
+    if road_match:
+        return road_match.group(0).strip()
+
+    jibun_match = re.search(JIBUN_PATTERN, a)
+    if jibun_match:
+        return jibun_match.group(0).strip()
+
+    return None
+
+def extract_region_hints(addr: str) -> List[str]:
+    a = str(addr).lower()
+    found = []
+    matched_spans = []
+
+    for eng, kor in REGION_HINTS_ORDERED:
+        start = a.find(eng)
+        if start != -1:
+            end = start + len(eng)
+            overlap = any(not (end <= s or start >= e) for s, e in matched_spans)
+            if not overlap and kor not in found:
+                found.append(kor)
+                matched_spans.append((start, end))
+    return found
+
+def order_region_hints(hints: List[str]) -> List[str]:
+    provinces, cities, districts, towns, dongs, others = [], [], [], [], [], []
+    for h in hints:
+        if h.endswith("도"):
+            provinces.append(h)
+        elif h in ["서울", "부산", "대구", "인천", "광주", "대전", "울산", "세종"] or h.endswith("시"):
+            cities.append(h)
+        elif h.endswith("구") or h.endswith("군"):
+            districts.append(h)
+        elif h.endswith("읍") or h.endswith("면"):
+            towns.append(h)
+        elif h.endswith("동"):
+            dongs.append(h)
+        else:
+            others.append(h)
+
+    ordered = provinces + cities + districts + towns + dongs + others
+    out = []
+    for x in ordered:
+        if x not in out:
+            out.append(x)
+    return out
+
+def extract_trailing_locality(addr: str) -> Optional[str]:
+    s = compact_korean_spacing(str(addr))
+    matches = re.findall(r"([가-힣A-Za-z0-9\.]+(?:동|리|읍|면))\b", s)
+    for m in matches:
+        if re.fullmatch(r"\d+동", m):
+            continue
+        if re.fullmatch(r"\d+리", m):
+            continue
+        return m
+    return None
+
+def build_region_enriched_query(raw_addr: str, core_addr: str) -> str:
+    hints = order_region_hints(extract_region_hints(raw_addr))
+    trailing = extract_trailing_locality(raw_addr)
+    parts = []
+    for h in hints:
+        if h not in parts:
+            parts.append(h)
+    if trailing and trailing not in parts:
+        parts.append(trailing)
+    parts.append(core_addr)
+    return " ".join(parts).strip()
+
+def search_kakao_address(address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
+    headers = {"Authorization": f"KakaoAK {api_key}"}
+    params = {"query": str(address).strip()}
+    resp = session.get(KAKAO_API_URL, headers=headers, params=params, timeout=10)
+    resp.raise_for_status()
+    return resp.json()
+
+def parse_kakao_docs(docs: list) -> Tuple[str, str, str, str]:
+    doc = docs[0]
+    road_addr = doc.get("road_address") or {}
+    jibun_addr = doc.get("address") or {}
+    return road_addr.get("address_name", ""), jibun_addr.get("address_name", ""), doc.get("y", ""), doc.get("x", "")
+
+def try_query(query: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
+    data = search_kakao_address(query, api_key, session)
+    docs = data.get("documents", [])
+    out = {"query": query, "count": len(docs), "road": "", "jibun": "", "lat": "", "lon": ""}
+    if len(docs) == 1:
+        road_name, jibun_name, lat, lon = parse_kakao_docs(docs)
+        out.update({"road": road_name, "jibun": jibun_name, "lat": lat, "lon": lon})
+    return out
+
+def classify_kakao_result(raw_address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
+    addr = str(raw_address).strip()
+    result = {
+        "원본주소": raw_address, "조회주소": "", "판정": "",
+        "도로명주소": "", "지번주소": "", "위도": "", "경도": "", "오류사유": ""
+    }
+
+    if not addr or addr.lower() == "nan":
+        result["판정"] = "오류"; result["오류사유"] = "빈 주소"; return result
+    if is_apt_only(addr):
+        result["판정"] = "오류"; result["오류사유"] = "아파트명/동호만 존재"; return result
+
+    try:
+        r1 = try_query(addr, api_key, session)
+        if r1["count"] == 1:
+            result.update({"조회주소": r1["query"], "판정": "정상", "도로명주소": r1["road"], "지번주소": r1["jibun"], "위도": r1["lat"], "경도": r1["lon"]})
+            return result
+
+        core_addr = extract_core_korean_address(addr)
+        if not core_addr:
+            result["판정"] = "오류"; result["오류사유"] = "핵심 한국 주소 추출 실패"; return result
+
+        region_query = build_region_enriched_query(addr, core_addr)
+        r2 = try_query(region_query, api_key, session) if region_query != core_addr else {"count": 0}
+        if r2["count"] == 1:
+            result.update({"조회주소": r2["query"], "판정": "정상", "도로명주소": r2["road"], "지번주소": r2["jibun"], "위도": r2["lat"], "경도": r2["lon"]})
+            return result
+
+        r3 = try_query(core_addr, api_key, session)
+        if r3["count"] == 1:
+            result.update({"조회주소": r3["query"], "판정": "정상", "도로명주소": r3["road"], "지번주소": r3["jibun"], "위도": r3["lat"], "경도": r3["lon"]})
+            return result
+
+        compact_core = compact_korean_spacing(core_addr)
+        region_query2 = build_region_enriched_query(addr, compact_core)
+        r4 = try_query(region_query2, api_key, session) if region_query2 != compact_core else {"count": 0}
+        if r4["count"] == 1:
+            result.update({"조회주소": r4["query"], "판정": "정상", "도로명주소": r4["road"], "지번주소": r4["jibun"], "위도": r4["lat"], "경도": r4["lon"]})
+            return result
+
+        r5 = try_query(compact_core, api_key, session) if compact_core != core_addr else {"count": 0}
+        if r5["count"] == 1:
+            result.update({"조회주소": r5["query"], "판정": "정상", "도로명주소": r5["road"], "지번주소": r5["jibun"], "위도": r5["lat"], "경도": r5["lon"]})
+            return result
+
+        result["판정"] = "오류"
+        result["조회주소"] = region_query2 if region_query2 else compact_core
+        max_count = max(r1["count"], r2["count"], r3["count"], r4["count"], r5["count"])
+        result["오류사유"] = "조회 실패" if max_count == 0 else f"후보 다수(최대 {max_count}건)"
+        return result
+
+    except requests.HTTPError as e:
+        status_code = e.response.status_code if e.response is not None else ""
+        result["판정"] = "오류"
+        if status_code == 401:
+            result["오류사유"] = "API 키 인증 오류"
+        elif status_code == 429:
+            result["오류사유"] = "호출 한도 초과"
+        else:
+            result["오류사유"] = f"HTTP 오류 {status_code}"
+        return result
+    except requests.RequestException:
+        result["판정"] = "오류"; result["오류사유"] = "네트워크 오류"; return result
+    except Exception as e:
+        result["판정"] = "오류"; result["오류사유"] = f"처리 오류: {e}"; return result
+
+def to_excel_bytes(df_all: pd.DataFrame, df_ok: pd.DataFrame, df_err: pd.DataFrame) -> bytes:
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        df_all.to_excel(writer, index=False, sheet_name="전체결과")
+        df_ok.to_excel(writer, index=False, sheet_name="정상")
+        df_err.to_excel(writer, index=False, sheet_name="오류")
+        workbook = writer.book
+        for sheet_name, df in {"전체결과": df_all, "정상": df_ok, "오류": df_err}.items():
+            ws = writer.sheets[sheet_name]
+            ws.freeze_panes(1, 0)
+            header_fmt = workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1, "align": "center", "valign": "vcenter"})
+            for i, col in enumerate(df.columns):
+                width = max(12, min(52, max(len(str(col)), int(df[col].astype(str).str.len().quantile(0.9)) if len(df) else 12) + 2))
+                ws.set_column(i, i, width)
+                ws.write(0, i, col, header_fmt)
+    return output.getvalue()
+
 st.set_page_config(
     page_title="TY LOGIS 업무 자동화 시스템",
     layout="wide",
@@ -1119,6 +1577,7 @@ def topbar():
         "threepl": "3PL",
         "bl_convert": "3PL BL PDF 변환",
         "kyungdong": "전자상 경동리스트",
+        "address_verify": "주소 / 통관 검증",
         "meni_convert": "메니변환",
     }
     page_name = page_map.get(st.session_state.page, "메인 대시보드")
@@ -1207,7 +1666,9 @@ def ecommerce_page():
             '<div class="card-desc">주소 정리, 우편번호 확인, 개인통관부호 검증 메뉴를 추가할 수 있습니다.</div></div>',
             unsafe_allow_html=True,
         )
-        st.button("준비중", use_container_width=True, disabled=True, key="ecom_addr_ready")
+        if st.button("주소 / 통관 검증 열기", use_container_width=True, key="open_addr_from_ecom"):
+            st.session_state.page = "address_verify"
+            st.rerun()
 
     with c3:
         st.markdown(
@@ -1219,6 +1680,104 @@ def ecommerce_page():
         if st.button("메니변환 열기", use_container_width=True, key="open_meni_from_ecom"):
             st.session_state.page = "meni_convert"
             st.rerun()
+
+
+def address_verify_page():
+    topbar()
+    if st.button("← 전자상거래로 돌아가기", key="addr_back"):
+        st.session_state.page = "ecommerce"
+        st.rerun()
+
+    st.markdown(
+        '<div class="content-card"><div class="page-title">📍 주소 / 통관 검증</div>'
+        '<div class="page-sub">카카오 주소 API로 엑셀 주소를 검증하고 정상/오류 결과를 다운로드합니다.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    with st.expander("사용 안내", expanded=True):
+        st.write("- 엑셀은 최소 2개 컬럼이 필요합니다. 예: 송장 / 주소")
+        st.write("- 카카오 REST API 키를 입력한 뒤 엑셀을 업로드하세요.")
+        st.write("- 결과는 전체결과, 정상, 오류 시트로 나누어 다운로드됩니다.")
+
+    kakao_api_key = st.text_input(
+        "카카오 REST API 키",
+        type="password",
+        help="Kakao Developers > 내 애플리케이션 > 앱 키 > REST API 키",
+        key="addr_kakao_api_key",
+    )
+
+    uploaded = st.file_uploader("주소 검증용 엑셀 업로드", type=["xlsx"], key="addr_excel_file")
+
+    if uploaded is None:
+        st.info("엑셀 파일을 업로드하면 주소 검증을 진행할 수 있습니다.")
+        return
+
+    if not kakao_api_key:
+        st.warning("카카오 REST API 키를 먼저 입력해주세요.")
+        return
+
+    try:
+        df = pd.read_excel(uploaded)
+    except Exception as e:
+        st.error(f"엑셀 파일을 읽는 중 오류가 발생했습니다: {e}")
+        return
+
+    if df.empty:
+        st.error("업로드한 엑셀에 데이터가 없습니다.")
+        return
+
+    try:
+        default_invoice_col, default_address_col = detect_columns(df)
+    except Exception as e:
+        st.error(str(e))
+        return
+
+    st.markdown('<div class="section-title">컬럼 확인</div>', unsafe_allow_html=True)
+    c1, c2 = st.columns(2)
+    with c1:
+        invoice_col = st.selectbox("송장 컬럼", options=list(df.columns), index=list(df.columns).index(default_invoice_col), key="addr_invoice_col")
+    with c2:
+        address_col = st.selectbox("주소 컬럼", options=list(df.columns), index=list(df.columns).index(default_address_col), key="addr_address_col")
+
+    st.markdown('<div class="section-title">미리보기</div>', unsafe_allow_html=True)
+    st.dataframe(df[[invoice_col, address_col]].head(20), use_container_width=True)
+
+    if st.button("✅ 주소 검증 실행", type="primary", use_container_width=True, key="addr_run"):
+        session = requests.Session()
+        progress = st.progress(0)
+        status = st.empty()
+        results = []
+        total = len(df)
+
+        for pos, (_, row) in enumerate(df.iterrows(), start=1):
+            status.text(f"처리 중... {pos} / {total}")
+            r = classify_kakao_result(row[address_col], kakao_api_key, session)
+            r["송장"] = row[invoice_col]
+            results.append(r)
+            progress.progress(pos / total)
+
+        result_df = pd.DataFrame(results)[["송장", "원본주소", "조회주소", "판정", "도로명주소", "지번주소", "위도", "경도", "오류사유"]]
+        ok_df = result_df[result_df["판정"] == "정상"].copy()
+        err_df = result_df[result_df["판정"] == "오류"].copy()
+
+        st.success("주소 검증이 완료되었습니다.")
+        m1, m2, m3 = st.columns(3)
+        m1.metric("총 건수", len(result_df))
+        m2.metric("정상", len(ok_df))
+        m3.metric("오류", len(err_df))
+
+        st.markdown('<div class="section-title">결과 미리보기</div>', unsafe_allow_html=True)
+        st.dataframe(result_df.head(50), use_container_width=True)
+
+        excel_bytes = to_excel_bytes(result_df, ok_df, err_df)
+        st.download_button(
+            "⬇️ 주소검증 결과 다운로드",
+            excel_bytes,
+            file_name="카카오_주소검증_결과_v8.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            use_container_width=True,
+            key="addr_download",
+        )
 
 
 def seaair_page():
@@ -2094,6 +2653,8 @@ else:
         kyungdong_page()
     elif st.session_state.page == "meni_convert":
         meni_convert_page()
+    elif st.session_state.page == "address_verify":
+        address_verify_page()
     elif st.session_state.page == "ecommerce":
         ecommerce_page()
     elif st.session_state.page == "seaair":
