@@ -1549,21 +1549,37 @@ def _clean_detail_suffix(detail: str) -> str:
 
 
 def _match_suffix_after_candidate(raw: str, candidate: str):
-    """candidate가 원본 안에서 끝나는 위치를 찾습니다. 매칭 여부와 suffix를 함께 반환합니다."""
+    """candidate가 원본 안에서 끝나는 위치를 찾습니다.
+
+    핵심 보정:
+    - 공백/쉼표/하이픈 차이는 무시해서 `도림로12`와 `도림로 12`를 같은 주소로 봅니다.
+    - 원본 안에 같은 후보가 여러 번 있으면, 뒤쪽 상세주소가 잘리지 않도록 "가장 앞쪽의 정상 매칭"보다
+      실제 기본주소가 끝나는 위치가 자연스러운 매칭을 사용합니다.
+    - 매칭 뒤에 `번지`가 있으면 기본주소 부가표기라 보고 상세주소 앞에서 제거합니다.
+    """
     raw_norm, raw_compact, idx_map = _build_preserve_compact_index_map(raw)
     cand_compact = _addr_compact(candidate)
     if not raw_norm or not raw_compact or not cand_compact:
         return False, ""
 
-    pos = raw_compact.find(cand_compact)
-    if pos < 0:
+    positions = [m.start() for m in re.finditer(re.escape(cand_compact), raw_compact)]
+    if not positions:
         return False, ""
 
-    end_compact_idx = pos + len(cand_compact) - 1
-    if end_compact_idx >= len(idx_map):
-        return False, ""
-    end_norm_idx = idx_map[end_compact_idx] + 1
-    return True, _clean_detail_suffix(raw_norm[end_norm_idx:])
+    # 같은 후보가 여러 번 잡히면 더 긴 suffix를 남기는 앞쪽 매칭을 우선합니다.
+    # 예: 원본 끝 괄호의 행정동 `(명동2가)` 같은 짧은 매칭이 뒤에서 잡혀 상세주소가 사라지는 문제 방지.
+    best_suffix = None
+    for pos in positions:
+        end_compact_idx = pos + len(cand_compact) - 1
+        if end_compact_idx >= len(idx_map):
+            continue
+        end_norm_idx = idx_map[end_compact_idx] + 1
+        suffix = _clean_detail_suffix(raw_norm[end_norm_idx:])
+        if best_suffix is None or len(suffix) > len(best_suffix):
+            best_suffix = suffix
+
+    return True, (best_suffix or "")
+
 
 
 def _road_or_jibun_tail_candidates(text: str) -> list:
@@ -1571,8 +1587,8 @@ def _road_or_jibun_tail_candidates(text: str) -> list:
     s = normalize_addr_for_detail_match(text)
     candidates = []
 
-    # 긴 도로명 패턴을 먼저 잡고, '5길 23-9'처럼 중간 숫자부터 잡히는 짧은 오인식은 뒤에서 제거합니다.
     road_patterns = [
+        # 동탄오산로 86-8 / 명동10길 19-10 / 원적로488번길 5-1
         r"[가-힣A-Za-z][0-9가-힣A-Za-z\.]{1,}(?:대로|로|길|거리)\s*\d+[가-힣]?(?:번길|번로|길)\s*\d{1,5}(?:[-~～]\d{1,5})?",
         r"[가-힣A-Za-z][0-9가-힣A-Za-z\.]{1,}\d+(?:번길|번로|길)\s*\d{1,5}(?:[-~～]\d{1,5})?",
         r"[가-힣A-Za-z][0-9가-힣A-Za-z\.]{1,}(?:대로|로|길|거리)\s*\d{1,5}(?:[-~～]\d{1,5})?",
@@ -1584,7 +1600,7 @@ def _road_or_jibun_tail_candidates(text: str) -> list:
                 candidates.append(cand)
 
     jibun_patterns = [
-        r"[가-힣A-Za-z][가-힣A-Za-z0-9\.]+(?:동|리|가)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+        r"[가-힣A-Za-z0-9\.]+(?:동|리|가)\s*\d{1,5}(?:[-~～]\d{1,5})?",
         r"[가-힣A-Za-z][가-힣A-Za-z0-9\.]+(?:읍|면)\s+[가-힣A-Za-z0-9\.]+(?:리|동)?\s*\d{1,5}(?:[-~～]\d{1,5})?",
     ]
     for pat in jibun_patterns:
@@ -1602,25 +1618,93 @@ def _road_or_jibun_tail_candidates(text: str) -> list:
         filtered.append(cand)
     return filtered
 
+def _last_road_jibun_tail(text: str) -> str:
+    """API 주소의 마지막 핵심 주소(도로명+번호 또는 동/리/가+지번)를 반환합니다."""
+    candidates = _road_or_jibun_tail_candidates(text)
+    if not candidates:
+        return ""
+    # 실제 주소 끝부분을 우선: API 주소에서 가장 뒤에 나오는 후보, 동률이면 긴 후보
+    norm = normalize_addr_for_detail_match(text)
+    candidates.sort(key=lambda c: (norm.rfind(c), len(_addr_compact(c))), reverse=True)
+    return candidates[0]
+
 
 def _candidate_list_for_base(base: str) -> list:
     base = str(base or "").strip()
     if not base:
         return []
-    candidates = [base]
-    for cand in _road_or_jibun_tail_candidates(base):
-        if cand and cand not in candidates:
-            candidates.append(cand)
-    # 긴 후보 우선. 긴 후보가 매칭되어 suffix가 비면 상세주소가 없는 것으로 판단해야 짧은 후보 오인식을 막을 수 있음.
-    return sorted(candidates, key=lambda x: len(_addr_compact(x)), reverse=True)
+
+    candidates = []
+
+    # 1순위: 원본에 가장 잘 들어맞는 마지막 핵심 주소
+    # 예: `경기 안산시 상록구 이동 612-22` -> `이동 612-22`
+    #     `서울 영등포구 도림로 12` -> `도림로 12`
+    #     `경기 화성시 동탄오산로 86-8` -> `동탄오산로 86-8`
+    tail = _last_road_jibun_tail(base)
+    if tail:
+        candidates.append(tail)
+
+    # 2순위: API 전체 기본주소. 원본에도 시/군/구가 같이 있을 때 정확도를 올림.
+    candidates.append(base)
+
+    # 3순위: 후보 전체. 단, 짧은 후보가 긴 후보의 일부인 경우는 뒤쪽 오인식을 막기 위해 제외.
+    all_tails = _road_or_jibun_tail_candidates(base)
+    compact_pairs = [(c, _addr_compact(c)) for c in all_tails]
+    for cand, cc in compact_pairs:
+        if any(cand != other and cc and cc in oc and len(cc) < len(oc) for other, oc in compact_pairs):
+            continue
+        candidates.append(cand)
+
+    # 중복 제거 + 너무 짧은 후보 제거. `가`, `동` 같은 1글자 오인식 방지.
+    deduped = []
+    for cand in candidates:
+        cc = _addr_compact(cand)
+        if len(cc) < 4:
+            continue
+        if cand not in deduped:
+            deduped.append(cand)
+
+    # 기본적으로 마지막 핵심주소를 먼저 보되, 같은 후보군 안에서는 긴 후보 우선.
+    return sorted(deduped, key=lambda x: (x != tail, len(_addr_compact(x))), reverse=False)
+
+
+def _score_detail_match(kind: str, candidate: str, suffix: str, raw_addr: str) -> tuple:
+    """도로명/지번 후보 중 상세주소포함 기준으로 쓸 주소를 고르기 위한 점수."""
+    cand_len = len(_addr_compact(candidate))
+    suffix_clean = _clean_detail_suffix(suffix)
+    suffix_len = len(suffix_clean)
+
+    # 상세주소가 너무 길게 남으면 도로명/지번 기준이 원본과 어긋났을 가능성이 큼.
+    # 예: 원본은 지번인데 도로명 기준으로 붙여서 `장충동1가 35-13 306호`가 상세주소가 되는 경우.
+    bad_leftover = bool(re.search(r"[가-힣0-9A-Za-z\.]+(?:동|리|가)\s*\d{1,5}(?:[-~～]\d{1,5})?", suffix_clean))
+
+    # 원본 주소 형태 힌트: 원본에 지번 패턴이 강하면 지번 후보 우선, 도로명 패턴이 강하면 도로명 후보 우선.
+    raw_norm = normalize_addr_for_detail_match(raw_addr)
+    raw_looks_jibun = bool(re.search(r"[가-힣0-9A-Za-z\.]+(?:동|리|가)\s*\d{1,5}(?:[-~～]\d{1,5})?", raw_norm))
+    raw_looks_road = bool(re.search(r"[가-힣0-9A-Za-z\.]+(?:대로|로|길|거리)\s*\d{1,5}(?:[-~～]\d{1,5})?", raw_norm))
+
+    kind_bonus = 0
+    if kind == "지번" and raw_looks_jibun:
+        kind_bonus += 1000
+    if kind == "도로명" and raw_looks_road:
+        kind_bonus += 1000
+
+    # 상세주소가 남는 후보를 우선. 단, 지번 일부가 남는 후보는 감점.
+    detail_bonus = 200 if suffix_len > 0 else 0
+    bad_penalty = -2000 if bad_leftover else 0
+
+    return (kind_bonus + detail_bonus + bad_penalty, cand_len, -suffix_len)
 
 
 def extract_detail_with_base(raw_addr: str, road_addr: str = "", jibun_addr: str = ""):
     """원본주소와 더 잘 맞는 API 기본주소(도로명/지번)를 선택하고 상세주소를 추출합니다.
 
-    - 원본이 도로명 형태이면 도로명주소 기준으로 상세주소를 붙입니다.
-    - 원본이 지번 형태이면 지번주소 기준으로 상세주소를 붙입니다.
-    - 도로명/지번 API 결과는 정상 시트처럼 둘 다 그대로 남겨두고, 상세주소포함만 선택 기준주소 1개로 만듭니다.
+    - API 도로명주소/지번주소는 정상 시트처럼 둘 다 유지합니다.
+    - `상세주소포함`은 원본주소에서 실제로 매칭되는 쪽(도로명 또는 지번)을 골라 하나만 만듭니다.
+    - 기본주소의 마지막 핵심주소 뒤에 따라오는 내용은 그대로 상세주소로 붙입니다.
+      예: `이동 612-22 번지 지하` -> `경기 안산시 상록구 이동 612-22 지하`
+          `도림로12 2층` -> `서울 ... 도림로 12 2층`
+          `동탄오산로 86-8 오산동 ...` -> `경기 ... 동탄오산로 86-8 오산동 ...`
     """
     raw = str(raw_addr or "").strip()
     road = str(road_addr or "").strip()
@@ -1638,21 +1722,16 @@ def extract_detail_with_base(raw_addr: str, road_addr: str = "", jibun_addr: str
                     "base": base,
                     "candidate": cand,
                     "suffix": suffix,
-                    "candidate_len": len(_addr_compact(cand)),
-                    "suffix_len": len(suffix),
+                    "score": _score_detail_match(kind, cand, suffix, raw),
                 })
-                # 같은 base에서 가장 긴 후보가 매칭되면 그 결과를 신뢰하고 다음 base로 넘어감
-                break
 
     if matched_results:
-        # 원본과 실제로 맞은 후보 중 가장 긴 주소를 우선. 동률이면 도로명보다 지번 원본 매칭을 우선하기 위해 suffix가 자연스러운 짧은 쪽 사용.
-        matched_results.sort(key=lambda x: (x["candidate_len"], -x["suffix_len"]), reverse=True)
+        matched_results.sort(key=lambda x: x["score"], reverse=True)
         best = matched_results[0]
         return best["base"], best["suffix"], best["kind"]
 
     # 매칭 실패 시 기존 정책: 도로명 우선, 없으면 지번
     return road or jibun, "", "도로명" if road else "지번"
-
 
 def extract_detail_address(raw_addr: str, road_addr: str = "", jibun_addr: str = "", query_addr: str = "") -> str:
     """호환용: 상세주소만 반환합니다."""
