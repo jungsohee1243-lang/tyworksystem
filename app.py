@@ -1541,10 +1541,15 @@ def _sanitize_detail_text(text: str) -> str:
 
 def _clean_detail_suffix(detail: str) -> str:
     detail = str(detail or "")
+    # 상세주소 앞에 붙은 구분자 정리. 괄호는 상세주소일 수 있어 보존합니다.
     detail = re.sub(r"^[\s,，./\-~～]+", "", detail)
+    # 지번주소 뒤에 바로 붙는 "번지"는 상세주소가 아니라 기본주소 보조표기라 제거
     detail = re.sub(r"^(?:번지|번지내|지번)\s*", "", detail)
     detail = _sanitize_detail_text(detail)
     detail = re.sub(r"\s+", " ", detail).strip(" ,，-/~～")
+    # API 주소가 원본의 괄호 안 주소와 매칭된 경우 suffix가 ')' 하나만 남는 문제 방지
+    if detail in {"(", ")", "（", "）", "[]", "{}"}:
+        return ""
     return detail
 
 
@@ -1584,8 +1589,35 @@ def _match_suffix_after_candidate(raw: str, candidate: str):
 
 def _road_or_jibun_tail_candidates(text: str) -> list:
     """API 주소에서 도로명+건물번호 또는 동/리/가+지번 꼬리 후보를 뽑습니다."""
-    s = normalize_addr_for_detail_match(text)
+    # compact_korean_spacing 과정에서 `동탄구 동탄오산로`가 붙어
+    # `동탄구동탄오산로 86-8`처럼 잘못 긴 후보가 생길 수 있으므로,
+    # 먼저 원문 공백 기준으로 마지막 도로명/지번 꼬리를 따로 뽑습니다.
+    raw_s = str(text or "")
+    raw_s = re.sub(r"[\[\]\(\)（）,，]", " ", raw_s)
+    raw_s = re.sub(r"\s+", " ", raw_s).strip()
     candidates = []
+
+    raw_road_patterns = [
+        r"[가-힣A-Za-z0-9\.]+(?:대로|로|길|거리)\s*\d+[가-힣]?(?:번길|번로|길)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+        r"[가-힣A-Za-z0-9\.]+(?:대로|로|길|거리)\d+[가-힣]?(?:번길|번로|길)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+        r"[가-힣A-Za-z0-9\.]+(?:대로|로|길|거리)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+    ]
+    for pat in raw_road_patterns:
+        for m in re.finditer(pat, raw_s, flags=re.I):
+            cand = re.sub(r"\s+", " ", m.group(0)).strip()
+            if cand and cand not in candidates:
+                candidates.append(cand)
+
+    raw_jibun_patterns = [
+        r"[가-힣A-Za-z0-9\.]+(?:동|리|가)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+    ]
+    for pat in raw_jibun_patterns:
+        for m in re.finditer(pat, raw_s, flags=re.I):
+            cand = re.sub(r"\s+", " ", m.group(0)).strip()
+            if cand and cand not in candidates:
+                candidates.append(cand)
+
+    s = normalize_addr_for_detail_match(text)
 
     road_patterns = [
         # 동탄오산로 86-8 / 명동10길 19-10 / 원적로488번길 5-1
@@ -1609,11 +1641,18 @@ def _road_or_jibun_tail_candidates(text: str) -> list:
             if cand and cand not in candidates:
                 candidates.append(cand)
 
-    # 짧은 후보가 긴 후보의 일부이면 제거: 구로동로5길 23-9 안의 5길 23-9 같은 케이스 방지
+    # 긴 후보가 짧은 핵심 후보로 끝나는 경우(예: 동탄구동탄오산로 86-8 vs 동탄오산로 86-8)는
+    # 행정구역명이 붙은 긴 후보를 버리고, 실제 도로명/지번 꼬리만 남깁니다.
     filtered = []
     compact_pairs = [(c, _addr_compact(c)) for c in candidates]
     for cand, cc in compact_pairs:
-        if any(cand != other and cc and cc in oc and len(cc) < len(oc) for other, oc in compact_pairs):
+        # `명동10길 19-10` 안에서 `10길 19-10`처럼 숫자로 시작하는 짧은 후보가 따로 잡히면 제거
+        if re.match(r"^\d", cc or "") and any(cand != other and oc and oc.endswith(cc) and len(oc) > len(cc) for other, oc in compact_pairs):
+            continue
+        # `명동10길 19-10` 안에서 `명동10`이 지번처럼 오인식되는 경우 제거
+        if any(cand != other and oc and oc.startswith(cc) and len(oc) > len(cc) and re.search(r"(?:대로|로|길|거리)", other) for other, oc in compact_pairs):
+            continue
+        if any(cand != other and oc and cc.endswith(oc) and len(cc) > len(oc) for other, oc in compact_pairs):
             continue
         filtered.append(cand)
     return filtered
@@ -1647,11 +1686,17 @@ def _candidate_list_for_base(base: str) -> list:
     # 2순위: API 전체 기본주소. 원본에도 시/군/구가 같이 있을 때 정확도를 올림.
     candidates.append(base)
 
-    # 3순위: 후보 전체. 단, 짧은 후보가 긴 후보의 일부인 경우는 뒤쪽 오인식을 막기 위해 제외.
+    # 3순위: 후보 전체. 행정구역명이 붙은 긴 후보보다 실제 핵심 꼬리 후보를 우선합니다.
     all_tails = _road_or_jibun_tail_candidates(base)
     compact_pairs = [(c, _addr_compact(c)) for c in all_tails]
     for cand, cc in compact_pairs:
-        if any(cand != other and cc and cc in oc and len(cc) < len(oc) for other, oc in compact_pairs):
+        # `명동10길 19-10` 안에서 `10길 19-10`처럼 숫자로 시작하는 짧은 후보가 따로 잡히면 제거
+        if re.match(r"^\d", cc or "") and any(cand != other and oc and oc.endswith(cc) and len(oc) > len(cc) for other, oc in compact_pairs):
+            continue
+        # `명동10길 19-10` 안에서 `명동10`이 지번처럼 오인식되는 경우 제거
+        if any(cand != other and oc and oc.startswith(cc) and len(oc) > len(cc) and re.search(r"(?:대로|로|길|거리)", other) for other, oc in compact_pairs):
+            continue
+        if any(cand != other and oc and cc.endswith(oc) and len(cc) > len(oc) for other, oc in compact_pairs):
             continue
         candidates.append(cand)
 
@@ -1689,11 +1734,11 @@ def _score_detail_match(kind: str, candidate: str, suffix: str, raw_addr: str) -
     if kind == "도로명" and raw_looks_road:
         kind_bonus += 1000
 
-    # 상세주소가 남는 후보를 우선. 단, 지번 일부가 남는 후보는 감점.
-    detail_bonus = 200 if suffix_len > 0 else 0
+    # ')' 하나처럼 의미 없는 잔여문자가 남은 후보보다, 실제 상세주소가 길게 남는 후보를 우선한다.
+    detail_bonus = min(suffix_len, 60) * 10 if suffix_len > 0 else 0
     bad_penalty = -2000 if bad_leftover else 0
 
-    return (kind_bonus + detail_bonus + bad_penalty, cand_len, -suffix_len)
+    return (kind_bonus + detail_bonus + bad_penalty, suffix_len, cand_len)
 
 
 def extract_detail_with_base(raw_addr: str, road_addr: str = "", jibun_addr: str = ""):
