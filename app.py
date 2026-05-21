@@ -2922,7 +2922,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     fta_hawb_list = df.loc[mask_fta, col_hawb].astype(str).tolist()
 
     # 메니변환본 특수문자 정리 (é -> e 등)
-    df = df.applymap(normalize_meni_special_chars)
+    df = df.apply(lambda col: col.map(normalize_meni_special_chars))
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
