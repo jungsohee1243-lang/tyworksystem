@@ -5,6 +5,7 @@ import string
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
+import unicodedata
 
 import pandas as pd
 import requests
@@ -1470,14 +1471,103 @@ def classify_kakao_result(raw_address: str, api_key: str, session: requests.Sess
     except Exception as e:
         result["판정"] = "오류"; result["오류사유"] = f"처리 오류: {e}"; return result
 
-def to_excel_bytes(df_all: pd.DataFrame, df_ok: pd.DataFrame, df_err: pd.DataFrame) -> bytes:
+
+def normalize_addr_for_detail_match(text: str) -> str:
+    """상세주소 분리를 위해 주소 문자열의 공백/쉼표/괄호를 느슨하게 정리합니다."""
+    s = compact_korean_spacing(str(text or ""))
+    s = re.sub(r"[\[\]\(\)（）,，]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def extract_detail_address(raw_addr: str, road_addr: str = "", jibun_addr: str = "", query_addr: str = "") -> str:
+    """원본주소에서 카카오 API 기본주소 뒤에 붙은 동/호수·상세주소만 추출합니다.
+
+    우선 도로명주소, 지번주소, 조회주소 순서로 원본 안에서 위치를 찾고,
+    찾은 기본주소 뒤쪽 문자열을 상세주소로 사용합니다.
+    """
+    raw = normalize_addr_for_detail_match(raw_addr)
+    if not raw:
+        return ""
+
+    candidates = [road_addr, jibun_addr, query_addr]
+    best_suffix = ""
+    best_pos = -1
+
+    for base in candidates:
+        base_norm = normalize_addr_for_detail_match(base)
+        if not base_norm:
+            continue
+        pos = raw.find(base_norm)
+        if pos >= 0:
+            suffix = raw[pos + len(base_norm):].strip(" ,，-/")
+            if pos > best_pos:
+                best_pos = pos
+                best_suffix = suffix
+
+    if not best_suffix:
+        # 띄어쓰기 차이가 큰 경우를 위한 보조 비교: 공백 없는 문자열 기준
+        raw_compact = re.sub(r"\s+", "", raw)
+        for base in candidates:
+            base_norm = normalize_addr_for_detail_match(base)
+            base_compact = re.sub(r"\s+", "", base_norm)
+            if not base_compact:
+                continue
+            pos = raw_compact.find(base_compact)
+            if pos >= 0:
+                suffix_compact = raw_compact[pos + len(base_compact):]
+                if suffix_compact:
+                    best_suffix = suffix_compact
+                    break
+
+    # API 기본주소/조회주소가 그대로 남거나 불필요한 안내 문구가 붙는 경우 정리
+    best_suffix = re.sub(r"\s+", " ", best_suffix).strip(" ,，-/")
+    return best_suffix
+
+
+def append_detail_to_base(base_addr: str, detail_addr: str) -> str:
+    base = str(base_addr or "").strip()
+    detail = str(detail_addr or "").strip()
+    if not base:
+        return ""
+    return f"{base} {detail}".strip() if detail else base
+
+
+def build_detail_address_df(df_ok: pd.DataFrame) -> pd.DataFrame:
+    """정상 결과 기준으로 API 도로명/지번주소에 원본 상세주소를 합친 시트를 생성합니다."""
+    if df_ok is None or df_ok.empty:
+        return pd.DataFrame(columns=[
+            "송장", "원본주소", "조회주소", "상세주소", "도로명주소", "도로명주소_상세포함",
+            "지번주소", "지번주소_상세포함", "위도", "경도"
+        ])
+
+    out = df_ok.copy()
+    out["상세주소"] = out.apply(
+        lambda r: extract_detail_address(
+            r.get("원본주소", ""),
+            r.get("도로명주소", ""),
+            r.get("지번주소", ""),
+            r.get("조회주소", ""),
+        ),
+        axis=1,
+    )
+    out["도로명주소_상세포함"] = out.apply(lambda r: append_detail_to_base(r.get("도로명주소", ""), r.get("상세주소", "")), axis=1)
+    out["지번주소_상세포함"] = out.apply(lambda r: append_detail_to_base(r.get("지번주소", ""), r.get("상세주소", "")), axis=1)
+
+    cols = ["송장", "원본주소", "조회주소", "상세주소", "도로명주소", "도로명주소_상세포함", "지번주소", "지번주소_상세포함", "위도", "경도"]
+    return out[[c for c in cols if c in out.columns]]
+
+def to_excel_bytes(df_all: pd.DataFrame, df_ok: pd.DataFrame, df_err: pd.DataFrame, df_detail: Optional[pd.DataFrame] = None) -> bytes:
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
         df_all.to_excel(writer, index=False, sheet_name="전체결과")
         df_ok.to_excel(writer, index=False, sheet_name="정상")
         df_err.to_excel(writer, index=False, sheet_name="오류")
+        if df_detail is None:
+            df_detail = build_detail_address_df(df_ok)
+        df_detail.to_excel(writer, index=False, sheet_name="상세주소포함")
         workbook = writer.book
-        for sheet_name, df in {"전체결과": df_all, "정상": df_ok, "오류": df_err}.items():
+        for sheet_name, df in {"전체결과": df_all, "정상": df_ok, "오류": df_err, "상세주소포함": df_detail}.items():
             ws = writer.sheets[sheet_name]
             ws.freeze_panes(1, 0)
             header_fmt = workbook.add_format({"bold": True, "bg_color": "#D9EAF7", "border": 1, "align": "center", "valign": "vcenter"})
@@ -1819,7 +1909,8 @@ def address_verify_page():
         st.markdown('<div class="section-title">결과 미리보기</div>', unsafe_allow_html=True)
         st.dataframe(result_df.head(50), use_container_width=True)
 
-        excel_bytes = to_excel_bytes(result_df, ok_df, err_df)
+        detail_df = build_detail_address_df(ok_df)
+        excel_bytes = to_excel_bytes(result_df, ok_df, err_df, detail_df)
         st.download_button(
             "⬇️ 주소검증 결과 다운로드",
             excel_bytes,
@@ -2456,6 +2547,14 @@ def meni_distribute_to_target(df, col_af, target_total):
     new_total = float(w_series.sum())
     return df, new_total, distributed
 
+
+
+def normalize_meni_special_chars(value):
+    if pd.isna(value):
+        return value
+    text = str(value)
+    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+
 def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     df = pd.read_excel(uploaded_file).astype("object")
 
@@ -2557,6 +2656,9 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
 
     mask_fta = (v_after_str == "3") & (amt_after >= 150) & hs_str.isin(MENI_FTA_HS_CODES)
     fta_hawb_list = df.loc[mask_fta, col_hawb].astype(str).tolist()
+
+    # 메니변환본 특수문자 정리 (é -> e 등)
+    df = df.applymap(normalize_meni_special_chars)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
