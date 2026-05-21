@@ -1473,11 +1473,11 @@ def classify_kakao_result(raw_address: str, api_key: str, session: requests.Sess
         result["판정"] = "오류"; result["오류사유"] = f"처리 오류: {e}"; return result
 
 
+
 def normalize_addr_for_detail_match(text: str) -> str:
     """상세주소 분리를 위해 주소 문자열의 공백/쉼표/괄호/시도 표기를 느슨하게 정리합니다."""
     s = compact_korean_spacing(str(text or ""))
     s = re.sub(r"[\[\]\(\)（）,，]", " ", s)
-    # API는 축약형(서울/경기/경남 등), 원본은 전체형(서울특별시/경기도/경상남도 등)인 경우가 많아 통일
     replacements = {
         "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구", "인천광역시": "인천",
         "광주광역시": "광주", "대전광역시": "대전", "울산광역시": "울산", "세종특별자치시": "세종",
@@ -1487,7 +1487,6 @@ def normalize_addr_for_detail_match(text: str) -> str:
     }
     for old, new in replacements.items():
         s = s.replace(old, new)
-    # 서울시/부산시처럼 들어온 값도 API 축약형과 맞춤
     s = re.sub(r"\b(서울|부산|대구|인천|광주|대전|울산|세종)시\b", r"\1", s)
     s = re.sub(r"\s+", " ", s).strip()
     return s
@@ -1496,53 +1495,87 @@ def normalize_addr_for_detail_match(text: str) -> str:
 def _addr_compact(text: str) -> str:
     """공백/구두점 차이를 제거한 비교용 문자열."""
     s = normalize_addr_for_detail_match(text)
-    return re.sub(r"[\s,，./·\-]", "", s)
+    return re.sub(r"[\s,，./·\-~～]", "", s)
 
 
-def _build_compact_index_map(text: str):
-    """정규화된 주소에서 공백/구두점을 제거한 문자열과 원문 인덱스 매핑을 만듭니다."""
-    norm = normalize_addr_for_detail_match(text)
+def _normalize_raw_preserve_detail(text: str) -> str:
+    """원본 상세주소를 최대한 보존한 상태로 비교용 기본 정리만 합니다."""
+    s = compact_korean_spacing(str(text or ""))
+    replacements = {
+        "서울특별시": "서울", "부산광역시": "부산", "대구광역시": "대구", "인천광역시": "인천",
+        "광주광역시": "광주", "대전광역시": "대전", "울산광역시": "울산", "세종특별자치시": "세종",
+        "경기도": "경기", "강원특별자치도": "강원", "강원도": "강원",
+        "충청북도": "충북", "충청남도": "충남", "전라북도": "전북", "전북특별자치도": "전북",
+        "전라남도": "전남", "경상북도": "경북", "경상남도": "경남", "제주특별자치도": "제주",
+    }
+    for old, new in replacements.items():
+        s = s.replace(old, new)
+    s = re.sub(r"\b(서울|부산|대구|인천|광주|대전|울산|세종)시\b", r"\1", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _build_preserve_compact_index_map(text: str):
+    """원본 위치 보존용 compact 문자열과 원문 인덱스 매핑을 만듭니다."""
+    norm = _normalize_raw_preserve_detail(text)
     compact_chars = []
     index_map = []
     for i, ch in enumerate(norm):
-        if re.match(r"[\s,，./·\-]", ch):
+        if re.match(r"[\s,，./·\-~～\[\]\(\)（）]", ch):
             continue
         compact_chars.append(ch)
         index_map.append(i)
     return norm, "".join(compact_chars), index_map
 
 
-def _suffix_after_candidate_fuzzy(raw: str, candidate: str) -> str:
-    """원본주소 안에서 후보 주소의 끝지점을 찾고, 그 뒤 상세주소를 반환합니다.
-    예: API/원본 모두 '원적로488번길 5-1'까지 같으면 그 뒤 문장을 상세주소로 봅니다.
-    """
-    raw_norm, raw_compact, idx_map = _build_compact_index_map(raw)
+def _sanitize_detail_text(text: str) -> str:
+    """상세주소/최종주소에서 제거할 특수표시 정리."""
+    s = str(text or "")
+    # 요청 특수문자 제거: 알림벨, 별표류, 역슬래시
+    s = re.sub(r"[🔔★☆\\]", "", s)
+    # 빈 괄호/중복 공백 정리
+    s = re.sub(r"[\(（]\s*[\)）]", " ", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+
+def _clean_detail_suffix(detail: str) -> str:
+    detail = str(detail or "")
+    detail = re.sub(r"^[\s,，./\-~～]+", "", detail)
+    detail = re.sub(r"^(?:번지|번지내|지번)\s*", "", detail)
+    detail = _sanitize_detail_text(detail)
+    detail = re.sub(r"\s+", " ", detail).strip(" ,，-/~～")
+    return detail
+
+
+def _match_suffix_after_candidate(raw: str, candidate: str):
+    """candidate가 원본 안에서 끝나는 위치를 찾습니다. 매칭 여부와 suffix를 함께 반환합니다."""
+    raw_norm, raw_compact, idx_map = _build_preserve_compact_index_map(raw)
     cand_compact = _addr_compact(candidate)
     if not raw_norm or not raw_compact or not cand_compact:
-        return ""
+        return False, ""
 
     pos = raw_compact.find(cand_compact)
     if pos < 0:
-        return ""
+        return False, ""
 
-    # compact 문자열에서 candidate 마지막 글자의 원문 위치를 복원
     end_compact_idx = pos + len(cand_compact) - 1
     if end_compact_idx >= len(idx_map):
-        return ""
+        return False, ""
     end_norm_idx = idx_map[end_compact_idx] + 1
-    return _clean_detail_suffix(raw_norm[end_norm_idx:])
+    return True, _clean_detail_suffix(raw_norm[end_norm_idx:])
 
 
 def _road_or_jibun_tail_candidates(text: str) -> list:
-    """전체 주소에서 도로명+건물번호 또는 동/리/가+지번 꼬리 후보를 뽑습니다."""
+    """API 주소에서 도로명+건물번호 또는 동/리/가+지번 꼬리 후보를 뽑습니다."""
     s = normalize_addr_for_detail_match(text)
     candidates = []
 
-    # 도로명: 도림로 12, 난계로11길 30, 원적로488번길 5-1, 문화회관3길 22 등
+    # 긴 도로명 패턴을 먼저 잡고, '5길 23-9'처럼 중간 숫자부터 잡히는 짧은 오인식은 뒤에서 제거합니다.
     road_patterns = [
-        r"[0-9가-힣A-Za-z\.]+(?:대로|로|길|거리)\s*\d+[가-힣]?(?:번길|번로|길)\s*\d{1,5}(?:-\d{1,5})?",
-        r"[0-9가-힣A-Za-z\.]+\d+(?:번길|번로|길)\s*\d{1,5}(?:-\d{1,5})?",
-        r"[0-9가-힣A-Za-z\.]+(?:대로|로|길|거리)\s*\d{1,5}(?:-\d{1,5})?",
+        r"[가-힣A-Za-z][0-9가-힣A-Za-z\.]{1,}(?:대로|로|길|거리)\s*\d+[가-힣]?(?:번길|번로|길)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+        r"[가-힣A-Za-z][0-9가-힣A-Za-z\.]{1,}\d+(?:번길|번로|길)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+        r"[가-힣A-Za-z][0-9가-힣A-Za-z\.]{1,}(?:대로|로|길|거리)\s*\d{1,5}(?:[-~～]\d{1,5})?",
     ]
     for pat in road_patterns:
         for m in re.finditer(pat, s, flags=re.I):
@@ -1550,121 +1583,118 @@ def _road_or_jibun_tail_candidates(text: str) -> list:
             if cand and cand not in candidates:
                 candidates.append(cand)
 
-    # 지번: 구로동 136-26, 이동 612-22, 외동 1191-4, 황학동 378-2 등
     jibun_patterns = [
-        r"[가-힣A-Za-z0-9\.]+(?:동|리|가)\s*\d{1,5}(?:-\d{1,5})?",
-        r"[가-힣A-Za-z0-9\.]+(?:읍|면)\s+[가-힣A-Za-z0-9\.]+(?:리|동)?\s*\d{1,5}(?:-\d{1,5})?",
+        r"[가-힣A-Za-z][가-힣A-Za-z0-9\.]+(?:동|리|가)\s*\d{1,5}(?:[-~～]\d{1,5})?",
+        r"[가-힣A-Za-z][가-힣A-Za-z0-9\.]+(?:읍|면)\s+[가-힣A-Za-z0-9\.]+(?:리|동)?\s*\d{1,5}(?:[-~～]\d{1,5})?",
     ]
     for pat in jibun_patterns:
         for m in re.finditer(pat, s, flags=re.I):
             cand = re.sub(r"\s+", " ", m.group(0)).strip()
             if cand and cand not in candidates:
                 candidates.append(cand)
-    return candidates
+
+    # 짧은 후보가 긴 후보의 일부이면 제거: 구로동로5길 23-9 안의 5길 23-9 같은 케이스 방지
+    filtered = []
+    compact_pairs = [(c, _addr_compact(c)) for c in candidates]
+    for cand, cc in compact_pairs:
+        if any(cand != other and cc and cc in oc and len(cc) < len(oc) for other, oc in compact_pairs):
+            continue
+        filtered.append(cand)
+    return filtered
 
 
-def _clean_detail_suffix(detail: str) -> str:
-    detail = str(detail or "")
-    detail = re.sub(r"^[\s,，./\-]+", "", detail)
-    # 지번주소 뒤에 붙는 '번지'는 기본주소에 포함된 의미라 상세주소에서 제거
-    detail = re.sub(r"^(?:번지|번지내|지번)\s*", "", detail)
-    # API 조회 과정에서 남을 수 있는 불필요 단어 정리
-    detail = re.sub(r"\s+", " ", detail).strip(" ,，-/")
-    return detail
+def _candidate_list_for_base(base: str) -> list:
+    base = str(base or "").strip()
+    if not base:
+        return []
+    candidates = [base]
+    for cand in _road_or_jibun_tail_candidates(base):
+        if cand and cand not in candidates:
+            candidates.append(cand)
+    # 긴 후보 우선. 긴 후보가 매칭되어 suffix가 비면 상세주소가 없는 것으로 판단해야 짧은 후보 오인식을 막을 수 있음.
+    return sorted(candidates, key=lambda x: len(_addr_compact(x)), reverse=True)
 
 
-def _suffix_after_candidate(raw: str, candidate: str) -> str:
-    """원본주소에서 candidate 뒤쪽을 상세주소로 반환. 공백/하이픈 차이도 최대한 허용."""
-    raw_norm = normalize_addr_for_detail_match(raw)
-    cand_norm = normalize_addr_for_detail_match(candidate)
-    if not raw_norm or not cand_norm:
-        return ""
+def extract_detail_with_base(raw_addr: str, road_addr: str = "", jibun_addr: str = ""):
+    """원본주소와 더 잘 맞는 API 기본주소(도로명/지번)를 선택하고 상세주소를 추출합니다.
 
-    pos = raw_norm.find(cand_norm)
-    if pos >= 0:
-        return _clean_detail_suffix(raw_norm[pos + len(cand_norm):])
+    - 원본이 도로명 형태이면 도로명주소 기준으로 상세주소를 붙입니다.
+    - 원본이 지번 형태이면 지번주소 기준으로 상세주소를 붙입니다.
+    - 도로명/지번 API 결과는 정상 시트처럼 둘 다 그대로 남겨두고, 상세주소포함만 선택 기준주소 1개로 만듭니다.
+    """
+    raw = str(raw_addr or "").strip()
+    road = str(road_addr or "").strip()
+    jibun = str(jibun_addr or "").strip()
 
-    # 원적로488번길 5-1 / 원적로 488번길 5-1 / 하이픈·띄어쓰기 차이까지 허용
-    return _suffix_after_candidate_fuzzy(raw, candidate)
+    matched_results = []
+    for kind, base in [("도로명", road), ("지번", jibun)]:
+        if not base:
+            continue
+        for cand in _candidate_list_for_base(base):
+            matched, suffix = _match_suffix_after_candidate(raw, cand)
+            if matched:
+                matched_results.append({
+                    "kind": kind,
+                    "base": base,
+                    "candidate": cand,
+                    "suffix": suffix,
+                    "candidate_len": len(_addr_compact(cand)),
+                    "suffix_len": len(suffix),
+                })
+                # 같은 base에서 가장 긴 후보가 매칭되면 그 결과를 신뢰하고 다음 base로 넘어감
+                break
+
+    if matched_results:
+        # 원본과 실제로 맞은 후보 중 가장 긴 주소를 우선. 동률이면 도로명보다 지번 원본 매칭을 우선하기 위해 suffix가 자연스러운 짧은 쪽 사용.
+        matched_results.sort(key=lambda x: (x["candidate_len"], -x["suffix_len"]), reverse=True)
+        best = matched_results[0]
+        return best["base"], best["suffix"], best["kind"]
+
+    # 매칭 실패 시 기존 정책: 도로명 우선, 없으면 지번
+    return road or jibun, "", "도로명" if road else "지번"
 
 
 def extract_detail_address(raw_addr: str, road_addr: str = "", jibun_addr: str = "", query_addr: str = "") -> str:
-    """원본주소에서 API 기본주소 뒤의 동/호수·층·건물명 등 상세주소를 최대한 보존해 추출합니다.
-
-    기존 방식은 API 전체주소가 원본과 완전히 같은 경우만 잘 잡았기 때문에,
-    서울시/서울, 경상남도/경남, 띄어쓰기, 지번 '번지' 차이가 있으면 상세주소가 비는 문제가 있었습니다.
-    그래서 전체주소 매칭 후 실패하면 도로명+건물번호 또는 동/리+지번 꼬리 기준으로 한 번 더 찾습니다.
-    """
-    raw = str(raw_addr or "").strip()
-    if not raw:
-        return ""
-
-    # 1) API 전체주소/조회주소가 원본에 들어있는 경우
-    candidates = []
-    for base in [road_addr, jibun_addr, query_addr]:
-        if base and str(base).strip() not in candidates:
-            candidates.append(str(base).strip())
-
-    # 2) 전체주소에서 도로명+건물번호 / 지번 꼬리만 추출해서 후보 추가
-    for base in [road_addr, jibun_addr, query_addr, raw_addr]:
-        for cand in _road_or_jibun_tail_candidates(str(base or "")):
-            if cand and cand not in candidates:
-                candidates.append(cand)
-
-    best = ""
-    for cand in candidates:
-        suffix = _suffix_after_candidate(raw, cand)
-        # 원본 전체가 조회주소와 같아 suffix가 빈 경우는 건너뜀
-        if suffix and (not best or len(suffix) < len(best) or re.search(r"(동|호|층|호실|빌라|아파트|오피스텔|타워|상가|센터|마을|캐슬|스몰|지하|B\d|\d)", suffix, re.I)):
-            best = suffix
-            # 동/호/층 형태가 잡히면 충분히 신뢰 가능
-            if re.search(r"(\d+\s*동|\d+\s*호|\d+\s*층|지하|B\d)", suffix, re.I):
-                break
-
-    return _clean_detail_suffix(best)
+    """호환용: 상세주소만 반환합니다."""
+    _, detail, _ = extract_detail_with_base(raw_addr, road_addr, jibun_addr)
+    return _clean_detail_suffix(detail)
 
 
 def append_detail_to_base(base_addr: str, detail_addr: str) -> str:
     base = str(base_addr or "").strip()
-    detail = str(detail_addr or "").strip()
+    detail = _clean_detail_suffix(detail_addr)
     if not base:
         return ""
-    return f"{base} {detail}".strip() if detail else base
+    return _sanitize_detail_text(f"{base} {detail}".strip() if detail else base)
 
 
 def build_detail_address_df(df_ok: pd.DataFrame) -> pd.DataFrame:
     """정상 결과 기준으로 상세주소가 포함된 주소 시트 1개를 생성합니다.
 
-    도로명/지번 상세포함을 따로 만들지 않고,
-    원본주소에서 API 결과 주소의 마지막 핵심 주소(도로명+번지 또는 지번+번지) 뒤에 남은 값을
-    상세주소로 붙여서 하나의 주소 컬럼으로 제공합니다.
+    정상 시트처럼 API 도로명주소/지번주소는 둘 다 보여주고,
+    상세주소포함 컬럼만 원본주소와 더 잘 맞는 기준주소 1개를 골라 상세주소를 붙입니다.
+    예: 원본이 지번주소이면 API 지번주소 기준으로 306호를 붙이고, 도로명주소 뒤에 지번 일부가 붙는 문제를 방지합니다.
     """
     if df_ok is None or df_ok.empty:
         return pd.DataFrame(columns=[
-            "송장", "원본주소", "조회주소", "API기본주소", "상세주소", "상세주소포함", "위도", "경도"
+            "송장", "원본주소", "조회주소", "도로명주소", "지번주소", "API기본주소", "상세주소", "상세주소포함", "위도", "경도"
         ])
 
-    def choose_base_addr(row):
-        # 카카오 API에서 도로명주소가 있으면 도로명주소를 우선 사용하고, 없으면 지번주소 사용
-        road = str(row.get("도로명주소", "") or "").strip()
-        jibun = str(row.get("지번주소", "") or "").strip()
-        query = str(row.get("조회주소", "") or "").strip()
-        return road or jibun or query
-
     out = df_ok.copy()
-    out["API기본주소"] = out.apply(choose_base_addr, axis=1)
-    out["상세주소"] = out.apply(
-        lambda r: extract_detail_address(
+
+    base_detail = out.apply(
+        lambda r: extract_detail_with_base(
             r.get("원본주소", ""),
             r.get("도로명주소", ""),
             r.get("지번주소", ""),
-            r.get("조회주소", ""),
         ),
         axis=1,
     )
+    out["API기본주소"] = base_detail.apply(lambda x: x[0])
+    out["상세주소"] = base_detail.apply(lambda x: x[1])
     out["상세주소포함"] = out.apply(lambda r: append_detail_to_base(r.get("API기본주소", ""), r.get("상세주소", "")), axis=1)
 
-    cols = ["송장", "원본주소", "조회주소", "API기본주소", "상세주소", "상세주소포함", "위도", "경도"]
+    cols = ["송장", "원본주소", "조회주소", "도로명주소", "지번주소", "API기본주소", "상세주소", "상세주소포함", "위도", "경도"]
     return out[[c for c in cols if c in out.columns]]
 
 def to_excel_bytes(df_all: pd.DataFrame, df_ok: pd.DataFrame, df_err: pd.DataFrame, df_detail: Optional[pd.DataFrame] = None) -> bytes:
