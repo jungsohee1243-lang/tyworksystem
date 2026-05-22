@@ -1947,7 +1947,7 @@ def main_page():
 
     st.markdown('<div class="section-title">부서별 업무 메뉴</div>', unsafe_allow_html=True)
 
-    c1, c2, c3, c4 = st.columns(4, gap="large")
+    c1, c2, c3 = st.columns(3, gap="large")
 
     with c1:
         st.markdown(
@@ -3180,8 +3180,31 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         )
         v1_df["_ALI_HT_AMOUNT"] = v1_df[col_total].apply(ali_ht_to_number)
         sum_df = v1_df.groupby("_ALI_HT_SUM_KEY", dropna=False)["_ALI_HT_AMOUNT"].sum().reset_index()
-        target_keys = set(sum_df.loc[sum_df["_ALI_HT_AMOUNT"] >= 150, "_ALI_HT_SUM_KEY"])
+        amount150_keys = set(sum_df.loc[sum_df["_ALI_HT_AMOUNT"] >= 150, "_ALI_HT_SUM_KEY"])
+
+        # V=1 중 동일 수취인+전화번호+금액까지 같은 중복건도 목록건으로 추출
+        dup_amount_info = (
+            v1_df.groupby(["_ALI_HT_SUM_KEY", "_ALI_HT_AMOUNT"], dropna=False)
+            .agg(동일금액건수=(col_hawb, "count"))
+            .reset_index()
+        )
+        dup_amount_pairs = set(
+            tuple(x) for x in dup_amount_info.loc[
+                dup_amount_info["동일금액건수"] >= 2,
+                ["_ALI_HT_SUM_KEY", "_ALI_HT_AMOUNT"]
+            ].to_numpy()
+        )
+        same_amount_keys = {k for k, _amt in dup_amount_pairs}
+        target_keys = amount150_keys | same_amount_keys
+
         list_df = v1_df[v1_df["_ALI_HT_SUM_KEY"].isin(target_keys)].copy()
+        if not list_df.empty:
+            list_df["추출구분"] = list_df.apply(
+                lambda r: "150불이상+동일금액중복"
+                if (r["_ALI_HT_SUM_KEY"] in amount150_keys and (r["_ALI_HT_SUM_KEY"], r["_ALI_HT_AMOUNT"]) in dup_amount_pairs)
+                else ("150불이상" if r["_ALI_HT_SUM_KEY"] in amount150_keys else "동일금액중복"),
+                axis=1
+            )
 
         # 품명 변경은 목록건 시트 안에서만 적용
         for idx in list_df.index:
@@ -3226,6 +3249,8 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     summary = {
         "V=1 대상 행": len(v1_df),
         "목록건 행": len(list_df),
+        "목록건 150불이상 묶음": len(amount150_keys) if not v1_df.empty else 0,
+        "목록건 동일금액중복 묶음": len(same_amount_keys) if not v1_df.empty else 0,
         "V=3 대상 행": len(v3_df),
         "배제건 행": len(exclude_df),
         "품명 변경 건": len(change_df),
