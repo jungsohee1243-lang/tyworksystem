@@ -2355,6 +2355,7 @@ def kd_replace_delivery_terms(df):
         "신용": "현택",
         "대납": "현택",
         "선불": "현택",
+        "경선": "현택",
     }
 
     def convert_cell(x):
