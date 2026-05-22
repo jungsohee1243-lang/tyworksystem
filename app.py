@@ -3182,15 +3182,16 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         sum_df = v1_df.groupby("_ALI_HT_SUM_KEY", dropna=False)["_ALI_HT_AMOUNT"].sum().reset_index()
         amount150_keys = set(sum_df.loc[sum_df["_ALI_HT_AMOUNT"] >= 150, "_ALI_HT_SUM_KEY"])
 
-        # V=1 중 동일 수취인+전화번호+금액까지 같은 중복건도 목록건으로 추출
+        # V=1 중 동일 수취인+전화번호+금액까지 같은 중복건은
+        # 동일금액 중복 그룹의 합산금액이 150불 이상인 경우만 목록건으로 추출
         dup_amount_info = (
             v1_df.groupby(["_ALI_HT_SUM_KEY", "_ALI_HT_AMOUNT"], dropna=False)
-            .agg(동일금액건수=(col_hawb, "count"))
+            .agg(동일금액건수=(col_hawb, "count"), 동일금액합산=("_ALI_HT_AMOUNT", "sum"))
             .reset_index()
         )
         dup_amount_pairs = set(
             tuple(x) for x in dup_amount_info.loc[
-                dup_amount_info["동일금액건수"] >= 2,
+                (dup_amount_info["동일금액건수"] >= 2) & (dup_amount_info["동일금액합산"] >= 150),
                 ["_ALI_HT_SUM_KEY", "_ALI_HT_AMOUNT"]
             ].to_numpy()
         )
@@ -3250,7 +3251,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "V=1 대상 행": len(v1_df),
         "목록건 행": len(list_df),
         "목록건 150불이상 묶음": len(amount150_keys) if not v1_df.empty else 0,
-        "목록건 동일금액중복 묶음": len(same_amount_keys) if not v1_df.empty else 0,
+        "목록건 동일금액중복 150불이상 묶음": len(same_amount_keys) if not v1_df.empty else 0,
         "V=3 대상 행": len(v3_df),
         "배제건 행": len(exclude_df),
         "품명 변경 건": len(change_df),
@@ -3277,7 +3278,7 @@ def ali_ht_convert_page():
     )
 
     uploaded = st.file_uploader("알리HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file")
-    st.caption("기준: V=1 합산 150불 이상은 목록건, V=3 동일 수취인/전화번호 중복은 배제건으로 추출합니다. V값은 변경하지 않습니다.")
+    st.caption("기준: V=1 합산 150불 이상 또는 동일금액중복 합산 150불 이상은 목록건, V=3 동일 수취인/전화번호 중복은 배제건으로 추출합니다. V값은 변경하지 않습니다.")
 
     if uploaded:
         if st.button("✅ 알리HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run"):
