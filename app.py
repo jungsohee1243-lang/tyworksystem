@@ -2358,8 +2358,13 @@ def kd_replace_delivery_terms(df):
     }
 
     def convert_cell(x):
-        s = kd_norm_str(x)
-        return replace_map.get(s, x)
+        if pd.isna(x):
+            return x
+
+        s = str(x).strip()
+        s_key = s.replace(" ", "").replace("\n", "").replace("\t", "")
+
+        return replace_map.get(s_key, x)
 
     return df.map(convert_cell)
 
@@ -2814,10 +2819,12 @@ def meni_distribute_to_target(df, col_af, target_total):
 
 
 def normalize_meni_special_chars(value):
+    """품명 컬럼에서만 é/É 문자를 e/E로 변경합니다."""
     if pd.isna(value):
         return value
-    text = str(value)
-    return unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode("ascii")
+    if not isinstance(value, str):
+        return value
+    return value.replace("é", "e").replace("É", "E")
 
 def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     df = pd.read_excel(uploaded_file).astype("object")
@@ -2922,7 +2929,9 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     fta_hawb_list = df.loc[mask_fta, col_hawb].astype(str).tolist()
 
     # 메니변환본 특수문자 정리 (é -> e 등)
-    df = df.apply(lambda col: col.map(normalize_meni_special_chars))
+    # 품명 DESCRIPTION 컬럼에서만 é/É 문자를 e/E로 변경
+    for _col in [c for c in df.columns if "DESCRIPTION" in str(c).upper()]:
+        df[_col] = df[_col].map(normalize_meni_special_chars)
 
     output = io.BytesIO()
     with pd.ExcelWriter(output, engine="openpyxl") as writer:
