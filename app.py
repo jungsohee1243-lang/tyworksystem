@@ -1947,7 +1947,7 @@ def main_page():
 
     st.markdown('<div class="section-title">부서별 업무 메뉴</div>', unsafe_allow_html=True)
 
-    c1, c2, c3 = st.columns(3, gap="large")
+    c1, c2, c3, c4 = st.columns(4, gap="large")
 
     with c1:
         st.markdown(
@@ -2003,7 +2003,7 @@ def ecommerce_page():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns(3, gap="large")
+    c1, c2, c3, c4 = st.columns(4, gap="large")
     with c1:
         st.markdown(
             '<div class="dashboard-card"><div class="card-icon">📦</div>'
@@ -2035,6 +2035,17 @@ def ecommerce_page():
         )
         if st.button("메니변환 열기", use_container_width=True, key="open_meni_from_ecom"):
             st.session_state.page = "meni_convert"
+            st.rerun()
+
+    with c4:
+        st.markdown(
+            '<div class="dashboard-card"><div class="card-icon">📊</div>'
+            '<div class="card-title">알리HT변환</div>'
+            '<div class="card-desc">V=1 합산 150불 이상 송장 추출 및 지정 품명 변경 요약을 생성합니다.</div></div>',
+            unsafe_allow_html=True,
+        )
+        if st.button("알리HT변환 열기", use_container_width=True, key="open_ali_ht_from_ecom"):
+            st.session_state.page = "ali_ht_convert"
             st.rerun()
 
 
@@ -2197,7 +2208,7 @@ def seaair_page():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns(3, gap="large")
+    c1, c2, c3, c4 = st.columns(4, gap="large")
     with c1:
         st.markdown(
             '<div class="dashboard-card"><div class="card-icon">📄</div>'
@@ -2238,7 +2249,7 @@ def threepl_page():
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns(3, gap="large")
+    c1, c2, c3, c4 = st.columns(4, gap="large")
     with c1:
         st.markdown(
             '<div class="dashboard-card"><div class="card-icon">📄</div>'
@@ -3029,45 +3040,241 @@ def meni_convert_page():
 
     st.markdown(
         '<div class="content-card"><div class="page-title">🧾 메니변환</div>'
-        '<div class="page-sub">HDFC 메니 파일 자동 처리 · HS코드/용도구분/중량/FTA/메모시트 생성</div></div>',
+        '<div class="page-sub">HDFC 메니변환 · 알리HT 합산송장 추출</div></div>',
         unsafe_allow_html=True,
     )
 
-    uploaded = st.file_uploader("메니 엑셀 파일 업로드", type=["xlsx", "xls"], key="meni_file")
-    target_text = st.text_input("목표 총중량(kg) (선택)", placeholder="없으면 비워두세요", key="meni_target")
+    tab_meni, tab_ht = st.tabs(["① 메니변환", "② 알리HT변환"])
 
-    target_total = None
-    if target_text.strip():
-        try:
-            target_total = float(target_text.replace(",", "").strip())
-        except Exception:
-            st.warning("목표 총중량은 숫자로 입력해주세요. 숫자가 아니면 목표 중량 없이 처리됩니다.")
-            target_total = None
+    with tab_meni:
+        uploaded = st.file_uploader("메니 엑셀 파일 업로드", type=["xlsx", "xls"], key="meni_file")
+        target_text = st.text_input("목표 총중량(kg) (선택)", placeholder="없으면 비워두세요", key="meni_target")
+
+        target_total = None
+        if target_text.strip():
+            try:
+                target_total = float(target_text.replace(",", "").strip())
+            except Exception:
+                st.warning("목표 총중량은 숫자로 입력해주세요. 숫자가 아니면 목표 중량 없이 처리됩니다.")
+                target_total = None
+
+        if uploaded:
+            if st.button("✅ 메니변환 실행", type="primary", use_container_width=True, key="meni_run"):
+                try:
+                    with st.spinner("메니변환 처리 중입니다. 파일 용량에 따라 10초~1분 정도 걸릴 수 있어요..."):
+                        result_bytes, summary = meni_process_excel_to_bytes(uploaded, target_total=target_total)
+
+                    st.success("메니변환 완료")
+
+                    st.write("처리 요약")
+                    st.dataframe(pd.DataFrame([summary]), use_container_width=True, hide_index=True)
+
+                    st.download_button(
+                        "⬇️ 메니변환 결과 다운로드",
+                        result_bytes,
+                        file_name="메니변환_중량조정_최종.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="meni_download",
+                    )
+                except Exception as e:
+                    st.error(f"처리 중 오류가 발생했습니다: {e}")
+                    st.exception(e)
+        else:
+            st.info("엑셀 파일을 업로드하면 메니변환을 실행할 수 있습니다.")
+
+    with tab_ht:
+        st.markdown(
+            '<div class="page-sub">V=1 합산 150불 이상은 <b>목록건</b>, V=3 동일 수취인/전화번호 중복은 <b>배제건</b>으로 추출합니다.</div>',
+            unsafe_allow_html=True,
+        )
+        ht_uploaded = st.file_uploader("알리HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file_in_meni")
+        st.caption("기준: 동일 수취인명 + 전화번호 기준. V값은 변경하지 않습니다.")
+
+        if ht_uploaded:
+            if st.button("✅ 알리HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run_in_meni"):
+                try:
+                    with st.spinner("알리HT변환 처리 중입니다..."):
+                        result_bytes, summary = ali_ht_process_excel_to_bytes(ht_uploaded)
+                    st.success("알리HT변환 완료")
+                    st.write("처리 요약")
+                    st.dataframe(pd.DataFrame([summary]), use_container_width=True, hide_index=True)
+                    st.download_button(
+                        "⬇️ 알리HT 결과 다운로드",
+                        result_bytes,
+                        file_name="알리HT_목록건_배제건_결과.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="ali_ht_download_in_meni",
+                    )
+                except Exception as e:
+                    st.error(f"처리 중 오류가 발생했습니다: {e}")
+                    st.exception(e)
+        else:
+            st.info("엑셀 파일을 업로드하면 알리HT변환을 실행할 수 있습니다.")
+
+
+# ==============================
+# 알리HT변환
+# ==============================
+ALI_HT_NAME_MAP = {
+    "Seasoned Dried Bamboo Shoots": "Dried Bamboo Shoots",
+    "Processed peanuts": "Peanuts",
+    "Seasoned Seed": "Seed",
+    "Processed Walnut Kernels": "Walnut Kernels",
+    "rice cake": "Rice",
+    "Seasoned Dried": "Dried",
+}
+
+def ali_ht_norm_col(c):
+    return re.sub(r"\s+", "", str(c)).upper()
+
+def ali_ht_find_column(columns, keywords, required=True):
+    for col in columns:
+        n = ali_ht_norm_col(col)
+        if all(str(k).upper() in n for k in keywords):
+            return col
+    if required:
+        raise ValueError(f"필수 컬럼을 찾지 못했습니다: {keywords}")
+    return None
+
+def ali_ht_clean_text(v):
+    if pd.isna(v):
+        return ""
+    return str(v).strip()
+
+def ali_ht_to_number(v):
+    if pd.isna(v):
+        return 0.0
+    s = str(v).replace(",", "").strip()
+    try:
+        return float(s)
+    except Exception:
+        return 0.0
+
+def ali_ht_process_excel_to_bytes(uploaded_file):
+    df = pd.read_excel(uploaded_file).astype("object")
+
+    col_v = ali_ht_find_column(df.columns, ["용도구분"])
+    col_hawb = ali_ht_find_column(df.columns, ["HAWB", "NO"])
+    col_name = ali_ht_find_column(df.columns, ["C/NAME", "KOR"])
+    col_tel = ali_ht_find_column(df.columns, ["C/TEL"])
+    col_total = ali_ht_find_column(df.columns, ["总金额"])
+    desc_cols = [c for c in df.columns if "DESCRIPTION" in str(c).upper()]
+    if not desc_cols:
+        raise ValueError("DESCRIPTION 품명 컬럼을 찾지 못했습니다.")
+
+    v_str = df[col_v].astype(str).str.strip()
+
+    # =========================
+    # 목록건: V=1 중 동일 수취인+전화번호 합산 150불 이상
+    # =========================
+    v1_df = df[v_str == "1"].copy()
+    change_logs = []
+
+    if v1_df.empty:
+        list_df = v1_df.copy()
+    else:
+        v1_df["_ALI_HT_SUM_KEY"] = (
+            v1_df[col_name].apply(ali_ht_clean_text) + "_" + v1_df[col_tel].apply(ali_ht_clean_text)
+        )
+        v1_df["_ALI_HT_AMOUNT"] = v1_df[col_total].apply(ali_ht_to_number)
+        sum_df = v1_df.groupby("_ALI_HT_SUM_KEY", dropna=False)["_ALI_HT_AMOUNT"].sum().reset_index()
+        target_keys = set(sum_df.loc[sum_df["_ALI_HT_AMOUNT"] >= 150, "_ALI_HT_SUM_KEY"])
+        list_df = v1_df[v1_df["_ALI_HT_SUM_KEY"].isin(target_keys)].copy()
+
+        # 품명 변경은 목록건 시트 안에서만 적용
+        for idx in list_df.index:
+            hawb = ali_ht_clean_text(list_df.at[idx, col_hawb])
+            for col in desc_cols:
+                original = ali_ht_clean_text(list_df.at[idx, col])
+                if original in ALI_HT_NAME_MAP:
+                    new_name = ALI_HT_NAME_MAP[original]
+                    list_df.at[idx, col] = new_name
+                    change_logs.append({
+                        "송장": hawb,
+                        "품명컬럼": col,
+                        "기존품명": original,
+                        "변경품명": new_name,
+                    })
+
+        list_df = list_df.drop(columns=["_ALI_HT_SUM_KEY", "_ALI_HT_AMOUNT"], errors="ignore")
+
+    # =========================
+    # 배제건: V=3 중 동일 수취인+전화번호가 2건 이상인 리스트
+    # =========================
+    v3_df = df[v_str == "3"].copy()
+    if v3_df.empty:
+        exclude_df = v3_df.copy()
+    else:
+        v3_df["_ALI_HT_SUM_KEY"] = (
+            v3_df[col_name].apply(ali_ht_clean_text) + "_" + v3_df[col_tel].apply(ali_ht_clean_text)
+        )
+        v3_df["_ALI_HT_AMOUNT"] = v3_df[col_total].apply(ali_ht_to_number)
+        dup_info = (
+            v3_df.groupby("_ALI_HT_SUM_KEY", dropna=False)
+            .agg(동일건수=(col_hawb, "count"), 합산금액=("_ALI_HT_AMOUNT", "sum"))
+            .reset_index()
+        )
+        dup_keys = set(dup_info.loc[dup_info["동일건수"] >= 2, "_ALI_HT_SUM_KEY"])
+        exclude_df = v3_df[v3_df["_ALI_HT_SUM_KEY"].isin(dup_keys)].copy()
+        if not exclude_df.empty:
+            exclude_df = exclude_df.merge(dup_info, on="_ALI_HT_SUM_KEY", how="left")
+        exclude_df = exclude_df.drop(columns=["_ALI_HT_SUM_KEY", "_ALI_HT_AMOUNT"], errors="ignore")
+
+    change_df = pd.DataFrame(change_logs, columns=["송장", "품명컬럼", "기존품명", "변경품명"])
+    summary = {
+        "V=1 대상 행": len(v1_df),
+        "목록건 행": len(list_df),
+        "V=3 대상 행": len(v3_df),
+        "배제건 행": len(exclude_df),
+        "품명 변경 건": len(change_df),
+    }
+
+    output = io.BytesIO()
+    with pd.ExcelWriter(output, engine="openpyxl") as writer:
+        list_df.to_excel(writer, index=False, sheet_name="목록건")
+        exclude_df.to_excel(writer, index=False, sheet_name="배제건")
+        change_df.to_excel(writer, index=False, sheet_name="품명변경요약")
+    output.seek(0)
+    return output.getvalue(), summary
+
+def ali_ht_convert_page():
+    topbar()
+    if st.button("← 전자상거래로 돌아가기", key="ali_ht_back"):
+        st.session_state.page = "ecommerce"
+        st.rerun()
+
+    st.markdown(
+        '<div class="content-card"><div class="page-title">📊 알리HT변환</div>'
+        '<div class="page-sub">V=1 목록건 · V=3 배제건 · 품명 변경 요약 시트 생성</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    uploaded = st.file_uploader("알리HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file")
+    st.caption("기준: V=1 합산 150불 이상은 목록건, V=3 동일 수취인/전화번호 중복은 배제건으로 추출합니다. V값은 변경하지 않습니다.")
 
     if uploaded:
-        if st.button("✅ 메니변환 실행", type="primary", use_container_width=True, key="meni_run"):
+        if st.button("✅ 알리HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run"):
             try:
-                with st.spinner("메니변환 처리 중입니다. 파일 용량에 따라 10초~1분 정도 걸릴 수 있어요..."):
-                    result_bytes, summary = meni_process_excel_to_bytes(uploaded, target_total=target_total)
-
-                st.success("메니변환 완료")
-
+                with st.spinner("알리HT변환 처리 중입니다..."):
+                    result_bytes, summary = ali_ht_process_excel_to_bytes(uploaded)
+                st.success("알리HT변환 완료")
                 st.write("처리 요약")
                 st.dataframe(pd.DataFrame([summary]), use_container_width=True, hide_index=True)
-
                 st.download_button(
-                    "⬇️ 메니변환 결과 다운로드",
+                    "⬇️ 알리HT 결과 다운로드",
                     result_bytes,
-                    file_name="메니변환_중량조정_최종.xlsx",
+                    file_name="알리HT_목록건_배제건_결과.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    key="meni_download",
+                    key="ali_ht_download",
                 )
             except Exception as e:
                 st.error(f"처리 중 오류가 발생했습니다: {e}")
                 st.exception(e)
     else:
-        st.info("엑셀 파일을 업로드하면 메니변환을 실행할 수 있습니다.")
+        st.info("엑셀 파일을 업로드하면 알리HT변환을 실행할 수 있습니다.")
 
 
 if not st.session_state.login:
@@ -3079,6 +3286,8 @@ else:
         kyungdong_page()
     elif st.session_state.page == "meni_convert":
         meni_convert_page()
+    elif st.session_state.page == "ali_ht_convert":
+        ali_ht_convert_page()
     elif st.session_state.page == "address_verify":
         address_verify_page()
     elif st.session_state.page == "ecommerce":
