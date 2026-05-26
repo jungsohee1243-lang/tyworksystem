@@ -3250,27 +3250,50 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             if desc or unit:
                 total += unit * qty
         return ali_ht_money(total)
-    def hawbs_of(idxs):
-        return ", ".join(row_hawb(i) for i in idxs if row_hawb(i))
+    log_group_no = 0
+
+    def _pick_hawb_line(text, hawb):
+        """그룹 변경 전/후 문자열에서 해당 HAWB 줄만 뽑아 메모를 세로형으로 보기 좋게 표시."""
+        text = ali_ht_clean_text(text)
+        hawb = ali_ht_clean_text(hawb)
+        if not text or not hawb:
+            return text
+        parts = [p.strip() for p in text.split(" / ") if p.strip()]
+        for p in parts:
+            if hawb in p:
+                return p
+        return text
+
     def add_log(kind, idxs, modified_idxs, field, before, after, reason, row_i=None):
+        """메모 시트는 옆으로 송장 나열하지 않고, 관련 송장을 한 줄씩 세로로 기록.
+        수정제외 로그는 남기지 않으며, 실제 수정이 발생한 그룹만 기록한다.
+        """
+        nonlocal log_group_no
+        if kind == "수정제외":
+            return
         idxs = list(dict.fromkeys(idxs or []))
         modified_idxs = list(dict.fromkeys(modified_idxs or []))
-        kept_idxs = [i for i in idxs if i not in modified_idxs]
-        base = row_i if row_i is not None else (modified_idxs[0] if modified_idxs else (idxs[0] if idxs else None))
-        logs.append({
-            "구분": kind,
-            "수취인": row_name(base) if base is not None else "",
-            "전화번호": row_tel(base) if base is not None else "",
-            "묶인송장전체": hawbs_of(idxs),
-            "수정송장": hawbs_of(modified_idxs),
-            "유지송장": hawbs_of(kept_idxs),
-            "변경항목": field,
-            "변경전": before,
-            "변경후": after,
-            "사유": reason,
-            "원본행": (base + 2) if base is not None else "",
-            "HAWB NO": row_hawb(base) if base is not None else "",
-        })
+        if not modified_idxs:
+            return
+        rows_to_write = idxs if len(idxs) > 1 else modified_idxs
+        log_group_no += 1
+        modified_set = set(modified_idxs)
+        for ii in rows_to_write:
+            hawb = row_hawb(ii)
+            is_modified = ii in modified_set
+            logs.append({
+                "구분": kind,
+                "그룹번호": log_group_no,
+                "수취인": row_name(ii),
+                "전화번호": row_tel(ii),
+                "HAWB NO": hawb,
+                "원본행": ii + 2,
+                "처리상태": "수정" if is_modified else "유지",
+                "변경항목": field if is_modified else "그룹 내 유지",
+                "변경전": _pick_hawb_line(before, hawb) if is_modified else "",
+                "변경후": _pick_hawb_line(after, hawb) if is_modified else "",
+                "사유": reason,
+            })
 
     # E열 HAWB 문자 처리
     for i in df.index:
@@ -3330,7 +3353,6 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                 tmp.setdefault((detail_signature(i), total_val(i)), []).append(i)
             if any(len(v) >= 2 for v in tmp.values()):
                 skipped_under_150_count += 1
-                add_log("수정제외", idxs, [], "금액수정 제외", original_group_total, original_group_total, "같은 수취인/품명 반복이나 수취인 합계 150불 미만", idxs[0])
             continue
 
         # 분할배송 중복금액: 같은 수취인+전화+품명구성+총금액이 2건 이상이면 각 단가를 건수로 나눔
@@ -3498,7 +3520,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         if modified:
             add_log("배제분할", dup_idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), "V=3 동일 수취인·동일 품명·동일 금액 분할배송: 1건 원금액 유지, 나머지 1~3불 표시", modified[0])
 
-    memo_columns = ["구분", "수취인", "전화번호", "묶인송장전체", "수정송장", "유지송장", "변경항목", "변경전", "변경후", "사유", "원본행", "HAWB NO"]
+    memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유"]
     memo_df = pd.DataFrame(logs, columns=memo_columns)
     excluded_df = pd.DataFrame({"목록건에서 배제로 변경된 HAWB NO": excluded_from_list_hawbs})
 
@@ -3550,8 +3572,8 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         for cell in row:
             cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
     widths = {
-        "A": 12, "B": 18, "C": 18, "D": 45, "E": 35, "F": 35,
-        "G": 18, "H": 45, "I": 45, "J": 50, "K": 10, "L": 20,
+        "A": 14, "B": 10, "C": 18, "D": 18, "E": 22, "F": 10,
+        "G": 12, "H": 22, "I": 55, "J": 55, "K": 55,
     }
     for col_letter, width in widths.items():
         memo_ws.column_dimensions[col_letter].width = width
