@@ -3085,12 +3085,11 @@ def meni_convert_page():
 # 알리HT변환
 # ==============================
 ALI_HT_NAME_MAP = {
-    "Seasoned Dried Bamboo Shoots": "Dried Bamboo Shoots",
-    "Processed peanuts": "Peanuts",
-    "Seasoned Seed": "Seed",
-    "Processed Walnut Kernels": "Walnut Kernels",
-    "rice cake": "Rice",
-    "Seasoned Dried": "Dried",
+    "Dried Bamboo Shoots": "Seasoned Dried Bamboo Shoots",
+    "Peanuts": "Processed peanuts",
+    "Seed": "Seasoned Seed",
+    "Walnut Kernels": "Processed Walnut Kernels",
+    "Rice": "rice cake",
 }
 
 def ali_ht_norm_col(c):
@@ -3304,7 +3303,9 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             text_changed_cells.add((i, col_hawb))
             add_log("개별수정", [i], [i], "HAWB 문자형", before, after, "운송장번호 문자형 정리", i)
 
-    # 품명 변경: 요청된 품명은 상세 품명 전체 반복 영역에서 변경하고 메모/색표시
+    # 품명 변경: 왼쪽 원본 품명 → 오른쪽 변경 품명 단방향 처리
+    # Dried는 단순 전체 치환이 아니라, 품명 안에 Dried가 포함되고 Snack이 없을 때만
+    # 첫 Dried 앞에 Seasoned를 붙인다. 예: Dried Fruit Mix → Seasoned Dried Fruit Mix
     name_map_norm = {k.strip().lower(): v for k, v in ALI_HT_NAME_MAP.items()}
     name_change_count = 0
     for i in df.index:
@@ -3312,7 +3313,17 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             before = ali_ht_clean_text(df.at[i, desc_col])
             if not before:
                 continue
-            after = name_map_norm.get(before.strip().lower())
+
+            before_norm = before.strip().lower()
+            after = name_map_norm.get(before_norm)
+
+            if not after:
+                has_dried = re.search(r"\bdried\b", before, flags=re.I) is not None
+                has_snack = re.search(r"\bsnack\b", before, flags=re.I) is not None
+                already_seasoned_dried = re.search(r"\bseasoned\s+dried\b", before, flags=re.I) is not None
+                if has_dried and not has_snack and not already_seasoned_dried:
+                    after = re.sub(r"\bDried\b", "Seasoned Dried", before, count=1, flags=re.I)
+
             if after and before != after:
                 excel_set(i, desc_col, after)
                 desc_changed_cells.add((i, desc_col))
