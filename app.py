@@ -2040,11 +2040,11 @@ def ecommerce_page():
     with c4:
         st.markdown(
             '<div class="dashboard-card"><div class="card-icon">📊</div>'
-            '<div class="card-title">알리HT변환</div>'
-            '<div class="card-desc">V=1 합산 150불 이상 송장 추출 및 지정 품명 변경 요약을 생성합니다.</div></div>',
+            '<div class="card-title">알리 HT변환</div>'
+            '<div class="card-desc">원본 기준 금액·V·HS CODE를 최종 수정하고 메모 시트를 생성합니다.</div></div>',
             unsafe_allow_html=True,
         )
-        if st.button("알리HT변환 열기", use_container_width=True, key="open_ali_ht_from_ecom"):
+        if st.button("알리 HT변환 열기", use_container_width=True, key="open_ali_ht_from_ecom"):
             st.session_state.page = "ali_ht_convert"
             st.rerun()
 
@@ -3040,78 +3040,45 @@ def meni_convert_page():
 
     st.markdown(
         '<div class="content-card"><div class="page-title">🧾 메니변환</div>'
-        '<div class="page-sub">HDFC 메니변환 · 알리HT 합산송장 추출</div></div>',
+        '<div class="page-sub">HDFC 메니변환</div></div>',
         unsafe_allow_html=True,
     )
 
-    tab_meni, tab_ht = st.tabs(["① 메니변환", "② 알리HT변환"])
+    uploaded = st.file_uploader("메니 엑셀 파일 업로드", type=["xlsx", "xls"], key="meni_file")
+    target_text = st.text_input("목표 총중량(kg) (선택)", placeholder="없으면 비워두세요", key="meni_target")
 
-    with tab_meni:
-        uploaded = st.file_uploader("메니 엑셀 파일 업로드", type=["xlsx", "xls"], key="meni_file")
-        target_text = st.text_input("목표 총중량(kg) (선택)", placeholder="없으면 비워두세요", key="meni_target")
+    target_total = None
+    if target_text.strip():
+        try:
+            target_total = float(target_text.replace(",", "").strip())
+        except Exception:
+            st.warning("목표 총중량은 숫자로 입력해주세요. 숫자가 아니면 목표 중량 없이 처리됩니다.")
+            target_total = None
 
-        target_total = None
-        if target_text.strip():
+    if uploaded:
+        if st.button("✅ 메니변환 실행", type="primary", use_container_width=True, key="meni_run"):
             try:
-                target_total = float(target_text.replace(",", "").strip())
-            except Exception:
-                st.warning("목표 총중량은 숫자로 입력해주세요. 숫자가 아니면 목표 중량 없이 처리됩니다.")
-                target_total = None
+                with st.spinner("메니변환 처리 중입니다. 파일 용량에 따라 10초~1분 정도 걸릴 수 있어요..."):
+                    result_bytes, summary = meni_process_excel_to_bytes(uploaded, target_total=target_total)
 
-        if uploaded:
-            if st.button("✅ 메니변환 실행", type="primary", use_container_width=True, key="meni_run"):
-                try:
-                    with st.spinner("메니변환 처리 중입니다. 파일 용량에 따라 10초~1분 정도 걸릴 수 있어요..."):
-                        result_bytes, summary = meni_process_excel_to_bytes(uploaded, target_total=target_total)
+                st.success("메니변환 완료")
 
-                    st.success("메니변환 완료")
+                st.write("처리 요약")
+                st.dataframe(pd.DataFrame([summary]), use_container_width=True, hide_index=True)
 
-                    st.write("처리 요약")
-                    st.dataframe(pd.DataFrame([summary]), use_container_width=True, hide_index=True)
-
-                    st.download_button(
-                        "⬇️ 메니변환 결과 다운로드",
-                        result_bytes,
-                        file_name="메니변환_중량조정_최종.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="meni_download",
-                    )
-                except Exception as e:
-                    st.error(f"처리 중 오류가 발생했습니다: {e}")
-                    st.exception(e)
-        else:
-            st.info("엑셀 파일을 업로드하면 메니변환을 실행할 수 있습니다.")
-
-    with tab_ht:
-        st.markdown(
-            '<div class="page-sub">원본 파일 기준으로 금액/V/HS CODE를 최종 수정하고 메모 시트를 생성합니다.</div>',
-            unsafe_allow_html=True,
-        )
-        ht_uploaded = st.file_uploader("알리HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file_in_meni")
-        st.caption("기준: 동일 수취인명 + 전화번호 기준. V값은 변경하지 않습니다.")
-
-        if ht_uploaded:
-            if st.button("✅ 알리HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run_in_meni"):
-                try:
-                    with st.spinner("알리HT변환 처리 중입니다..."):
-                        result_bytes, summary = ali_ht_process_excel_to_bytes(ht_uploaded)
-                    st.success("알리HT변환 완료")
-                    st.write("처리 요약")
-                    st.dataframe(pd.DataFrame([summary]), use_container_width=True, hide_index=True)
-                    st.download_button(
-                        "⬇️ 알리HT 결과 다운로드",
-                        result_bytes,
-                        file_name="알리HT_최종수정본.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="ali_ht_download_in_meni",
-                    )
-                except Exception as e:
-                    st.error(f"처리 중 오류가 발생했습니다: {e}")
-                    st.exception(e)
-        else:
-            st.info("엑셀 파일을 업로드하면 알리HT변환을 실행할 수 있습니다.")
+                st.download_button(
+                    "⬇️ 메니변환 결과 다운로드",
+                    result_bytes,
+                    file_name="메니변환_중량조정_최종.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="meni_download",
+                )
+            except Exception as e:
+                st.error(f"처리 중 오류가 발생했습니다: {e}")
+                st.exception(e)
+    else:
+        st.info("엑셀 파일을 업로드하면 메니변환을 실행할 수 있습니다.")
 
 
 # ==============================
@@ -3201,9 +3168,15 @@ def ali_ht_add_log(logs, row_no, hawb, name, tel, field, before, after, reason):
 
 
 def ali_ht_process_excel_to_bytes(uploaded_file):
-    # 원본 전체를 수정한 최종파일 + 메모 시트로 출력
-    df = pd.read_excel(uploaded_file, dtype=object).astype("object")
+    """알리HT 원본 엑셀을 원본 서식 유지 상태로 직접 수정하고 메모 시트를 추가합니다."""
+    from openpyxl.utils import get_column_letter
+
+    # 업로드 파일은 pandas/openpyxl에서 각각 읽어야 하므로 bytes로 고정
+    file_bytes = uploaded_file.getvalue() if hasattr(uploaded_file, "getvalue") else uploaded_file.read()
+    df = pd.read_excel(io.BytesIO(file_bytes), dtype=object).astype("object")
     original_columns = list(df.columns)
+    wb = load_workbook(io.BytesIO(file_bytes))
+    ws = wb.active
 
     # 주요 컬럼: 헤더명 우선, 실패 시 사용자가 지정한 열 위치 기준
     col_hawb = ali_ht_pick_column(df.columns, 4, ["HAWB", "NO"])          # E
@@ -3212,45 +3185,116 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     col_name = ali_ht_pick_column(df.columns, 10, ["C/NAME", "KOR"])     # K
     col_tel = ali_ht_pick_column(df.columns, 14, ["C/TEL"])              # O
     col_total = ali_ht_pick_column(df.columns, 52, ["总金额"])            # BA
-    col_desc1 = ali_ht_pick_column(df.columns, 60, ["1.DESCRIPTION"], False)  # BI
-    if col_desc1 is None:
-        desc_cols = [c for c in df.columns if "DESCRIPTION" in str(c).upper()]
-        if not desc_cols:
-            raise ValueError("1.DESCRIPTION 품명 컬럼을 찾지 못했습니다.")
-        col_desc1 = desc_cols[0]
-    col_qty = ali_ht_pick_column(df.columns, 62, ["QTY"], False)          # BK
-    col_unit = ali_ht_pick_column(df.columns, 66, ["INVOICE", "VALUE"], False)  # BO
-    if col_qty is None:
-        raise ValueError("QTY 상세물품수량 컬럼을 찾지 못했습니다.")
-    if col_unit is None:
-        raise ValueError("INVOICE VALUE 상세물품금액/단가 컬럼을 찾지 못했습니다.")
+
+    col_pos = {col: idx + 1 for idx, col in enumerate(original_columns)}
+
+    # 상세 품명/수량/단가 반복 구조 찾기: DESCRIPTION 기준 +2=QTY, +6=INVOICE VALUE
+    detail_groups = []
+    cols = list(df.columns)
+    for idx, col in enumerate(cols):
+        norm = ali_ht_norm_col(col)
+        if "DESCRIPTION" in norm and "ITEMREMARK" not in norm:
+            qty_idx = idx + 2
+            unit_idx = idx + 6
+            if qty_idx < len(cols) and unit_idx < len(cols):
+                qty_col = cols[qty_idx]
+                unit_col = cols[unit_idx]
+                if "QTY" in ali_ht_norm_col(qty_col) and ("INVOICE" in ali_ht_norm_col(unit_col) or "VALUE" in ali_ht_norm_col(unit_col)):
+                    detail_groups.append((col, qty_col, unit_col))
+    if not detail_groups:
+        # 안전장치: 기존 위치 기준
+        desc_col = ali_ht_pick_column(df.columns, 60, ["1.DESCRIPTION"], False)
+        qty_col = ali_ht_pick_column(df.columns, 62, ["QTY"], False)
+        unit_col = ali_ht_pick_column(df.columns, 66, ["INVOICE", "VALUE"], False)
+        if not (desc_col and qty_col and unit_col):
+            raise ValueError("상세 품명/QTY/INVOICE VALUE 반복 컬럼을 찾지 못했습니다.")
+        detail_groups = [(desc_col, qty_col, unit_col)]
 
     logs = []
     money_changed_cells = set()
     v_changed_cells = set()
     hs_changed_cells = set()
     text_changed_cells = set()
+    desc_changed_cells = set()
     excluded_from_list_hawbs = []
+
+    def excel_set(i, col, value):
+        df.at[i, col] = value
+        ws.cell(row=i + 2, column=col_pos[col]).value = value
 
     def row_hawb(i): return ali_ht_clean_text(df.at[i, col_hawb])
     def row_name(i): return ali_ht_clean_text(df.at[i, col_name])
     def row_tel(i): return ali_ht_clean_text(df.at[i, col_tel])
     def group_key(i): return (row_name(i), row_tel(i))
-    def desc_key(i): return ali_ht_clean_text(df.at[i, col_desc1]).upper()
     def total_val(i): return ali_ht_money(ali_ht_to_number(df.at[i, col_total]))
-    def qty_val(i):
-        q = ali_ht_to_number(df.at[i, col_qty])
+    def qty_val(i, qty_col):
+        q = ali_ht_to_number(df.at[i, qty_col])
         return q if q else 1.0
-    def unit_val(i): return ali_ht_money(ali_ht_to_number(df.at[i, col_unit]))
+    def unit_val(i, unit_col): return ali_ht_money(ali_ht_to_number(df.at[i, unit_col]))
+    def detail_signature(i):
+        names = []
+        for desc_col, qty_col, unit_col in detail_groups:
+            d = ali_ht_clean_text(df.at[i, desc_col])
+            if d:
+                names.append(d.upper())
+        return tuple(names)
+    def first_desc(i):
+        sig = detail_signature(i)
+        return sig[0] if sig else ""
+    def recalc_row_total(i):
+        total = 0.0
+        for desc_col, qty_col, unit_col in detail_groups:
+            desc = ali_ht_clean_text(df.at[i, desc_col])
+            unit = unit_val(i, unit_col)
+            qty = qty_val(i, qty_col)
+            if desc or unit:
+                total += unit * qty
+        return ali_ht_money(total)
+    def hawbs_of(idxs):
+        return ", ".join(row_hawb(i) for i in idxs if row_hawb(i))
+    def add_log(kind, idxs, modified_idxs, field, before, after, reason, row_i=None):
+        idxs = list(dict.fromkeys(idxs or []))
+        modified_idxs = list(dict.fromkeys(modified_idxs or []))
+        kept_idxs = [i for i in idxs if i not in modified_idxs]
+        base = row_i if row_i is not None else (modified_idxs[0] if modified_idxs else (idxs[0] if idxs else None))
+        logs.append({
+            "구분": kind,
+            "수취인": row_name(base) if base is not None else "",
+            "전화번호": row_tel(base) if base is not None else "",
+            "묶인송장전체": hawbs_of(idxs),
+            "수정송장": hawbs_of(modified_idxs),
+            "유지송장": hawbs_of(kept_idxs),
+            "변경항목": field,
+            "변경전": before,
+            "변경후": after,
+            "사유": reason,
+            "원본행": (base + 2) if base is not None else "",
+            "HAWB NO": row_hawb(base) if base is not None else "",
+        })
 
     # E열 HAWB 문자 처리
     for i in df.index:
         before = df.at[i, col_hawb]
         after = ali_ht_set_text(before)
         if str(before) != str(after):
-            df.at[i, col_hawb] = after
+            excel_set(i, col_hawb, after)
             text_changed_cells.add((i, col_hawb))
-            ali_ht_add_log(logs, i + 2, after, row_name(i), row_tel(i), "HAWB 문자형", before, after, "운송장번호 문자형 정리")
+            add_log("개별수정", [i], [i], "HAWB 문자형", before, after, "운송장번호 문자형 정리", i)
+
+    # 품명 변경: 요청된 품명은 상세 품명 전체 반복 영역에서 변경하고 메모/색표시
+    name_map_norm = {k.strip().lower(): v for k, v in ALI_HT_NAME_MAP.items()}
+    name_change_count = 0
+    for i in df.index:
+        for desc_col, _qty_col, _unit_col in detail_groups:
+            before = ali_ht_clean_text(df.at[i, desc_col])
+            if not before:
+                continue
+            after = name_map_norm.get(before.strip().lower())
+            if after and before != after:
+                excel_set(i, desc_col, after)
+                desc_changed_cells.add((i, desc_col))
+                name_change_count += 1
+                add_log("품명변경", [i], [i], desc_col, before, after, "요청 품명 자동 변경", i)
 
     # AD 허용품목코드 6자리 문자형 + 30 시작코드 960719 변경
     if col_hs is not None:
@@ -3259,12 +3303,12 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             code = ali_ht_set_text(before, 6)
             after = "960719" if code.startswith("30") else code
             if str(before) != str(after):
-                df.at[i, col_hs] = after
+                excel_set(i, col_hs, after)
                 hs_changed_cells.add((i, col_hs))
                 reason = "30 시작 HS CODE → 960719 변경" if code.startswith("30") else "HS CODE 6자리 문자형 정리"
-                ali_ht_add_log(logs, i + 2, row_hawb(i), row_name(i), row_tel(i), "AD 허용품목코드", before, after, reason)
+                add_log("HS수정", [i], [i], "AD 허용품목코드", before, after, reason, i)
 
-    # V=1 목록건 처리: ① 같은품명+같은총금액 분할배송 단가/금액 분할 ② 합계 150~160 보정 ③ 160 초과 V=3 배제
+    # V=1 목록건 처리
     v1_indices = [i for i in df.index if ali_ht_clean_text(df.at[i, col_v]) == "1"]
     groups = {}
     for i in v1_indices:
@@ -3273,167 +3317,256 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     split_groups_count = 0
     adjusted_150_count = 0
     moved_to_v3_count = 0
+    skipped_under_150_count = 0
 
     for key, idxs in groups.items():
-        # 분할배송 중복금액: 같은 수취인+전화+품명+총금액이 2건 이상이면 각 단가를 건수로 나눔
+        original_group_total = ali_ht_money(sum(total_val(i) for i in idxs))
+
+        # 수취인 총합이 150불 미만이면 같은 품명이어도 수정 제외
+        if original_group_total < 150:
+            # 단순 정상건은 로그 과다 방지를 위해 중복 후보가 있을 때만 제외 기록
+            tmp = {}
+            for i in idxs:
+                tmp.setdefault((detail_signature(i), total_val(i)), []).append(i)
+            if any(len(v) >= 2 for v in tmp.values()):
+                skipped_under_150_count += 1
+                add_log("수정제외", idxs, [], "금액수정 제외", original_group_total, original_group_total, "같은 수취인/품명 반복이나 수취인 합계 150불 미만", idxs[0])
+            continue
+
+        # 분할배송 중복금액: 같은 수취인+전화+품명구성+총금액이 2건 이상이면 각 단가를 건수로 나눔
         dup_map = {}
         for i in idxs:
-            dup_map.setdefault((desc_key(i), total_val(i)), []).append(i)
-        for (_desc, amt), dup_idxs in dup_map.items():
-            if amt <= 0 or len(dup_idxs) < 2 or not _desc:
+            sig = detail_signature(i)
+            amt = total_val(i)
+            if amt > 0 and sig:
+                dup_map.setdefault((sig, amt), []).append(i)
+
+        for (_sig, amt), dup_idxs in dup_map.items():
+            if len(dup_idxs) < 2:
                 continue
             split_groups_count += 1
             n = len(dup_idxs)
+            modified = []
+            before_lines = []
+            after_lines = []
             for i in dup_idxs:
-                old_unit = unit_val(i)
-                old_total = total_val(i)
-                new_unit = ali_ht_money(old_unit / n)
-                new_total = ali_ht_money(new_unit * qty_val(i))
-                if new_unit != old_unit:
-                    df.at[i, col_unit] = new_unit
-                    money_changed_cells.add((i, col_unit))
-                    ali_ht_add_log(logs, i + 2, row_hawb(i), row_name(i), row_tel(i), "BO 단가", old_unit, new_unit, f"분할배송 {n}건 동일품명/동일금액 단가 분할")
-                if new_total != old_total:
-                    df.at[i, col_total] = new_total
+                row_before_total = total_val(i)
+                before_units = []
+                after_units = []
+                for desc_col, qty_col, unit_col in detail_groups:
+                    desc = ali_ht_clean_text(df.at[i, desc_col])
+                    if not desc:
+                        continue
+                    old_unit = unit_val(i, unit_col)
+                    if old_unit <= 0:
+                        continue
+                    new_unit = ali_ht_money(old_unit / n)
+                    if new_unit != old_unit:
+                        excel_set(i, unit_col, new_unit)
+                        money_changed_cells.add((i, unit_col))
+                        before_units.append(f"{desc}: {old_unit}")
+                        after_units.append(f"{desc}: {new_unit}")
+                new_total = recalc_row_total(i)
+                if new_total != row_before_total:
+                    excel_set(i, col_total, new_total)
                     money_changed_cells.add((i, col_total))
-                    ali_ht_add_log(logs, i + 2, row_hawb(i), row_name(i), row_tel(i), "BA 총금액", old_total, new_total, f"분할배송 {n}건 동일품명/동일금액 총금액 재계산")
+                if before_units or new_total != row_before_total:
+                    modified.append(i)
+                    before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(before_units)}], 총금액 {row_before_total}")
+                    after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(after_units)}], 총금액 {new_total}")
+            if modified:
+                add_log("목록분할", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"동일 수취인·동일 품명·동일 금액 {n}건 분할배송 처리", dup_idxs[0])
 
         group_total = ali_ht_money(sum(total_val(i) for i in idxs))
 
-        # 합계 150~160불은 149.00 이하로 금액 보정. 단가 큰 건부터, 한 행 단가 최대 5불 차감.
+        # 합계 150~160불은 149.00 이하로 금액 보정. 단가 큰 상세품목부터, 한 품명 단가 최대 5불 차감.
         if 150 <= group_total <= 160:
             need = ali_ht_money(group_total - 149.00)
             if need > 0:
-                adjusted_150_count += 1
-                # 금액/단가 큰 행부터 조정
-                candidates = sorted(idxs, key=lambda x: (unit_val(x), total_val(x)), reverse=True)
+                candidates = []
+                for i in idxs:
+                    for desc_col, qty_col, unit_col in detail_groups:
+                        desc = ali_ht_clean_text(df.at[i, desc_col])
+                        unit = unit_val(i, unit_col)
+                        qty = qty_val(i, qty_col)
+                        if unit > 0 and qty > 0 and (desc or unit):
+                            candidates.append((unit, unit * qty, i, desc_col, qty_col, unit_col, desc))
+                candidates.sort(reverse=True, key=lambda x: (x[0], x[1]))
                 remaining = need
-                for i in candidates:
+                modified = []
+                before_lines = []
+                after_lines = []
+                for _unit_sort, _total_sort, i, desc_col, qty_col, unit_col, desc in candidates:
                     if remaining <= 0:
                         break
-                    q = qty_val(i)
-                    if q <= 0:
-                        q = 1.0
-                    old_unit = unit_val(i)
-                    old_total = total_val(i)
-                    max_total_reduce = ali_ht_money(5.00 * q)
-                    reduce_total = min(remaining, max_total_reduce, old_total - 0.01)
-                    if reduce_total <= 0:
+                    q = qty_val(i, qty_col)
+                    old_unit = unit_val(i, unit_col)
+                    old_row_total = total_val(i)
+                    # 한 품명 단가에서 최대 5불까지만 차감
+                    reduce_unit = min(5.00, ali_ht_money(remaining / q), old_unit - 0.01)
+                    if reduce_unit <= 0:
                         continue
-                    reduce_unit = ali_ht_money(reduce_total / q)
-                    if reduce_unit > 5:
-                        reduce_unit = 5.00
                     new_unit = ali_ht_money(old_unit - reduce_unit)
-                    new_total = ali_ht_money(new_unit * q)
-                    actual_reduce = ali_ht_money(old_total - new_total)
-                    if new_unit < 0 or actual_reduce <= 0:
-                        continue
-                    df.at[i, col_unit] = new_unit
-                    df.at[i, col_total] = new_total
-                    money_changed_cells.add((i, col_unit))
+                    excel_set(i, unit_col, new_unit)
+                    money_changed_cells.add((i, unit_col))
+                    new_row_total = recalc_row_total(i)
+                    excel_set(i, col_total, new_row_total)
                     money_changed_cells.add((i, col_total))
-                    ali_ht_add_log(logs, i + 2, row_hawb(i), row_name(i), row_tel(i), "BO/BA 금액보정", f"단가 {old_unit}, 총금액 {old_total}", f"단가 {new_unit}, 총금액 {new_total}", "수취인별 합계 150~160불 → 149불대 보정")
+                    actual_reduce = ali_ht_money(old_row_total - new_row_total)
+                    if actual_reduce <= 0:
+                        continue
+                    modified.append(i)
+                    before_lines.append(f"{row_hawb(i)} {desc} 단가 {old_unit}, 총금액 {old_row_total}")
+                    after_lines.append(f"{row_hawb(i)} {desc} 단가 {new_unit}, 총금액 {new_row_total}")
                     remaining = ali_ht_money(remaining - actual_reduce)
+                if modified:
+                    adjusted_150_count += 1
+                    add_log("150~160보정", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"수취인별 합계 {group_total}불 → 149불대 보정", modified[0])
 
         # 보정 후에도 160불 초과면 V=3 배제 처리
         final_total = ali_ht_money(sum(total_val(i) for i in idxs))
         if final_total > 160:
             moved_to_v3_count += 1
+            modified = []
             for i in idxs:
                 before = df.at[i, col_v]
                 if ali_ht_clean_text(before) != "3":
-                    df.at[i, col_v] = "3"
+                    excel_set(i, col_v, "3")
                     v_changed_cells.add((i, col_v))
                     hawb = row_hawb(i)
                     excluded_from_list_hawbs.append(hawb)
-                    ali_ht_add_log(logs, i + 2, hawb, row_name(i), row_tel(i), "V 용도구분", before, "3", f"수취인별 합계 {final_total}불로 160불 초과, 배제 처리")
+                    modified.append(i)
+            if modified:
+                add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"수취인별 합계 {final_total}불로 160불 초과, 배제 처리", modified[0])
 
-    # V=3 배제건 처리: 같은 수취인+전화+품명+동일 총금액 분할배송만 1건 유지, 나머지 1~3불 표시용으로 조정
+    # V=3 배제건 처리: 같은 수취인+전화+품명구성+동일 총금액 분할배송만 1건 유지, 나머지 1~3불 표시용으로 조정
     v3_indices = [i for i in df.index if ali_ht_clean_text(df.at[i, col_v]) == "3"]
     v3_dup_map = {}
     for i in v3_indices:
         amt = total_val(i)
-        dkey = desc_key(i)
-        if amt > 0 and dkey:
-            v3_dup_map.setdefault((group_key(i), dkey, amt), []).append(i)
+        sig = detail_signature(i)
+        if amt > 0 and sig:
+            v3_dup_map.setdefault((group_key(i), sig, amt), []).append(i)
 
     v3_split_adjust_count = 0
-    for (_gkey, _dkey, _amt), dup_idxs in v3_dup_map.items():
+    for (_gkey, _sig, _amt), dup_idxs in v3_dup_map.items():
         if len(dup_idxs) < 2:
             continue
         v3_split_adjust_count += 1
-        # 첫 번째 건은 그대로 두고, 나머지는 2.00불로 표시
         keep = dup_idxs[0]
+        modified = []
+        before_lines = []
+        after_lines = []
         for i in dup_idxs[1:]:
             old_total = total_val(i)
-            old_unit = unit_val(i)
-            q = qty_val(i)
-            new_total = 2.00
-            new_unit = ali_ht_money(new_total / q) if q else 2.00
-            df.at[i, col_total] = new_total
-            df.at[i, col_unit] = new_unit
-            money_changed_cells.add((i, col_total))
-            money_changed_cells.add((i, col_unit))
-            ali_ht_add_log(logs, i + 2, row_hawb(i), row_name(i), row_tel(i), "BO/BA 배제건 분할표시", f"단가 {old_unit}, 총금액 {old_total}", f"단가 {new_unit}, 총금액 {new_total}", "V=3 동일품명/동일금액 분할배송: 1건 원금액 유지, 나머지 1~3불 표시")
+            old_units = []
+            new_units = []
+            # 첫 번째 상세 단가를 조정해서 총금액 2.00 내외로 표시
+            target_total = 2.00
+            first_detail = None
+            for desc_col, qty_col, unit_col in detail_groups:
+                if ali_ht_clean_text(df.at[i, desc_col]) or unit_val(i, unit_col) > 0:
+                    first_detail = (desc_col, qty_col, unit_col)
+                    break
+            if not first_detail:
+                continue
+            desc_col, qty_col, unit_col = first_detail
+            q = qty_val(i, qty_col)
+            old_unit = unit_val(i, unit_col)
+            new_unit = ali_ht_money(target_total / q) if q else 2.00
+            excel_set(i, unit_col, new_unit)
+            money_changed_cells.add((i, unit_col))
+            old_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {old_unit}")
+            new_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {new_unit}")
 
-    memo_df = pd.DataFrame(logs, columns=["원본행", "HAWB NO", "수취인", "전화번호", "변경항목", "변경전", "변경후", "사유"])
+            # 나머지 상세 단가가 있으면 0으로 조정해서 BA가 2.00에 맞도록 함
+            for dcol2, qcol2, ucol2 in detail_groups:
+                if ucol2 == unit_col:
+                    continue
+                if unit_val(i, ucol2) > 0:
+                    ou = unit_val(i, ucol2)
+                    excel_set(i, ucol2, 0.00)
+                    money_changed_cells.add((i, ucol2))
+                    old_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {ou}")
+                    new_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: 0.00")
+            new_total = recalc_row_total(i)
+            excel_set(i, col_total, new_total)
+            money_changed_cells.add((i, col_total))
+            modified.append(i)
+            before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(old_units)}], 총금액 {old_total}")
+            after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(new_units)}], 총금액 {new_total}")
+        if modified:
+            add_log("배제분할", dup_idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), "V=3 동일 수취인·동일 품명·동일 금액 분할배송: 1건 원금액 유지, 나머지 1~3불 표시", modified[0])
+
+    memo_columns = ["구분", "수취인", "전화번호", "묶인송장전체", "수정송장", "유지송장", "변경항목", "변경전", "변경후", "사유", "원본행", "HAWB NO"]
+    memo_df = pd.DataFrame(logs, columns=memo_columns)
     excluded_df = pd.DataFrame({"목록건에서 배제로 변경된 HAWB NO": excluded_from_list_hawbs})
 
     summary = {
         "전체 행": len(df),
         "V=1 대상 행": len(v1_indices),
+        "150불 미만 수정제외 묶음": skipped_under_150_count,
         "분할배송 금액분할 묶음": split_groups_count,
         "150~160불 금액보정 묶음": adjusted_150_count,
         "160불 초과 V=3 변경 묶음": moved_to_v3_count,
         "배제건 분할표시 묶음": v3_split_adjust_count,
+        "품명 변경 셀 수": name_change_count,
         "목록→배제 변경 HAWB 수": len(excluded_from_list_hawbs),
-        "전체 변경 로그 수": len(memo_df),
+        "전체 변경/확인 로그 수": len(memo_df),
     }
 
+    # 색상 표시: 요청대로 금액 수정 셀 중심 + V/HS/품명/문자형 변경 확인용 표시
+    money_fill = PatternFill("solid", fgColor="FFF2CC")   # 금액 수정: 연노랑
+    v_fill = PatternFill("solid", fgColor="F4CCCC")       # V 변경: 연빨강
+    hs_fill = PatternFill("solid", fgColor="D9EAD3")      # HS 변경: 연초록
+    text_fill = PatternFill("solid", fgColor="D9EAF7")    # 문자형 정리: 연파랑
+    desc_fill = PatternFill("solid", fgColor="EADCF8")    # 품명 변경: 연보라
+
+    for i, col in money_changed_cells:
+        ws.cell(row=i + 2, column=col_pos[col]).fill = money_fill
+    for i, col in v_changed_cells:
+        ws.cell(row=i + 2, column=col_pos[col]).fill = v_fill
+    for i, col in hs_changed_cells:
+        ws.cell(row=i + 2, column=col_pos[col]).fill = hs_fill
+    for i, col in text_changed_cells:
+        ws.cell(row=i + 2, column=col_pos[col]).fill = text_fill
+    for i, col in desc_changed_cells:
+        ws.cell(row=i + 2, column=col_pos[col]).fill = desc_fill
+
+    # 메모/목록배제송장 시트만 새로 생성. 원본 시트 서식은 건드리지 않음.
+    for sheet_name in ["메모", "목록배제송장"]:
+        if sheet_name in wb.sheetnames:
+            del wb[sheet_name]
+
+    memo_ws = wb.create_sheet("메모")
+    memo_ws.append(memo_columns)
+    for row in memo_df.itertuples(index=False):
+        memo_ws.append(list(row))
+    memo_ws.freeze_panes = "A2"
+    for cell in memo_ws[1]:
+        cell.font = cell.font.copy(bold=True)
+        cell.alignment = cell.alignment.copy(horizontal="center", vertical="center", wrap_text=True)
+    for row in memo_ws.iter_rows():
+        for cell in row:
+            cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
+    widths = {
+        "A": 12, "B": 18, "C": 18, "D": 45, "E": 35, "F": 35,
+        "G": 18, "H": 45, "I": 45, "J": 50, "K": 10, "L": 20,
+    }
+    for col_letter, width in widths.items():
+        memo_ws.column_dimensions[col_letter].width = width
+
+    if not excluded_df.empty:
+        ex_ws = wb.create_sheet("목록배제송장")
+        ex_ws.append(["목록건에서 배제로 변경된 HAWB NO"])
+        for hawb in excluded_from_list_hawbs:
+            ex_ws.append([hawb])
+        ex_ws.freeze_panes = "A2"
+        ex_ws.column_dimensions["A"].width = 28
+        ex_ws["A1"].font = ex_ws["A1"].font.copy(bold=True)
+
     output = io.BytesIO()
-    with pd.ExcelWriter(output, engine="openpyxl") as writer:
-        df.to_excel(writer, index=False, sheet_name="최종수정본")
-        memo_df.to_excel(writer, index=False, sheet_name="메모")
-        if not excluded_df.empty:
-            excluded_df.to_excel(writer, index=False, sheet_name="목록배제송장")
-
-        wb = writer.book
-        ws = wb["최종수정본"]
-        money_fill = PatternFill("solid", fgColor="FFF2CC")   # 금액 수정: 연노랑
-        v_fill = PatternFill("solid", fgColor="F4CCCC")       # V 변경: 연빨강
-        hs_fill = PatternFill("solid", fgColor="D9EAD3")      # HS 변경: 연초록
-        text_fill = PatternFill("solid", fgColor="D9EAF7")    # 문자형 정리: 연파랑
-
-        col_pos = {col: idx + 1 for idx, col in enumerate(original_columns)}
-        for i, col in money_changed_cells:
-            ws.cell(row=i + 2, column=col_pos[col]).fill = money_fill
-        for i, col in v_changed_cells:
-            ws.cell(row=i + 2, column=col_pos[col]).fill = v_fill
-        for i, col in hs_changed_cells:
-            ws.cell(row=i + 2, column=col_pos[col]).fill = hs_fill
-        for i, col in text_changed_cells:
-            ws.cell(row=i + 2, column=col_pos[col]).fill = text_fill
-
-        for sheet_name in wb.sheetnames:
-            s = wb[sheet_name]
-            s.freeze_panes = "A2"
-            for cell in s[1]:
-                cell.font = cell.font.copy(bold=True)
-                cell.alignment = cell.alignment.copy(horizontal="center", vertical="center", wrap_text=True)
-            for row in s.iter_rows():
-                for cell in row:
-                    cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
-            # 적당한 너비 자동 보정
-            for col_cells in s.columns:
-                max_len = 10
-                col_letter = col_cells[0].column_letter
-                for cell in col_cells[:80]:
-                    try:
-                        max_len = max(max_len, min(len(str(cell.value or "")), 45))
-                    except Exception:
-                        pass
-                s.column_dimensions[col_letter].width = max_len + 2
-
+    wb.save(output)
     output.seek(0)
     return output.getvalue(), summary
 
@@ -3444,20 +3577,20 @@ def ali_ht_convert_page():
         st.rerun()
 
     st.markdown(
-        '<div class="content-card"><div class="page-title">📊 알리HT변환</div>'
+        '<div class="content-card"><div class="page-title">📊 알리 HT변환</div>'
         '<div class="page-sub">원본 기준 금액/V/HS CODE 최종 수정 · 메모 시트 생성</div></div>',
         unsafe_allow_html=True,
     )
 
-    uploaded = st.file_uploader("알리HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file")
+    uploaded = st.file_uploader("알리 HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file")
     st.caption("기준: 원본 전체를 기준으로 분할배송 금액 조정, 150~160불 보정, 160불 초과 V=3 변경, HS CODE 정리 후 메모 시트를 생성합니다.")
 
     if uploaded:
-        if st.button("✅ 알리HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run"):
+        if st.button("✅ 알리 HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run"):
             try:
-                with st.spinner("알리HT변환 처리 중입니다..."):
+                with st.spinner("알리 HT변환 처리 중입니다..."):
                     result_bytes, summary = ali_ht_process_excel_to_bytes(uploaded)
-                st.success("알리HT변환 완료")
+                st.success("알리 HT변환 완료")
                 st.write("처리 요약")
                 st.dataframe(pd.DataFrame([summary]), use_container_width=True, hide_index=True)
                 st.download_button(
@@ -3472,7 +3605,7 @@ def ali_ht_convert_page():
                 st.error(f"처리 중 오류가 발생했습니다: {e}")
                 st.exception(e)
     else:
-        st.info("엑셀 파일을 업로드하면 알리HT변환을 실행할 수 있습니다.")
+        st.info("엑셀 파일을 업로드하면 알리 HT변환을 실행할 수 있습니다.")
 
 
 if not st.session_state.login:
