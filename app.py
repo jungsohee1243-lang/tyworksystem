@@ -2144,7 +2144,7 @@ def topbar():
 
 
 def main_page():
-    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    today_str = datetime.now(tz=__import__('zoneinfo').ZoneInfo('Asia/Seoul')).strftime("%Y년 %m월 %d일")
     load_dashboard_from_github()
 
     # ── 사이드바 ──
