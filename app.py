@@ -1844,7 +1844,7 @@ def to_excel_bytes(df_all: pd.DataFrame, df_ok: pd.DataFrame, df_err: pd.DataFra
 st.set_page_config(
     page_title="TY LOGIS 업무 자동화 시스템",
     layout="wide",
-    initial_sidebar_state="collapsed"
+    initial_sidebar_state="expanded"
 )
 
 import base64
@@ -1859,73 +1859,274 @@ if "user" not in st.session_state:
     st.session_state.user = ""
 if "page" not in st.session_state:
     st.session_state.page = "main"
+if "dash_schedule" not in st.session_state:
+    st.session_state.dash_schedule = None   # 작업일정 이미지 bytes
+if "dash_ty" not in st.session_state:
+    st.session_state.dash_ty = None         # TY 현황표 이미지 bytes
+if "dash_ky" not in st.session_state:
+    st.session_state.dash_ky = None         # KY 현황표 이미지 bytes
+if "dash_schedule_name" not in st.session_state:
+    st.session_state.dash_schedule_name = ""
+if "dash_ty_name" not in st.session_state:
+    st.session_state.dash_ty_name = ""
+if "dash_ky_name" not in st.session_state:
+    st.session_state.dash_ky_name = ""
 
-logo_html = ""
-if os.path.exists("ty_logo.png"):
-    logo_b64 = img_to_base64("ty_logo.png")
-    logo_html = f'<img src="data:image/png;base64,{logo_b64}" class="logo-img">'
-else:
-    logo_html = '<div class="logo-missing">ty_logo.png 파일이 없습니다.</div>'
+# ── GitHub 이미지 저장/로드 함수 ──
+import base64 as _b64
+
+def _gh_headers():
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    return {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+
+def _gh_repo():
+    return st.secrets.get("GITHUB_REPO", "")
+
+def github_upload_image(image_bytes, filename):
+    """이미지를 GitHub 레포 dashboard/ 폴더에 업로드."""
+    import requests as _req
+    repo = _gh_repo()
+    if not repo:
+        return False
+    url = f"https://api.github.com/repos/{repo}/contents/dashboard/{filename}"
+    # 기존 파일 SHA 조회 (업데이트 시 필요)
+    r = _req.get(url, headers=_gh_headers())
+    sha = r.json().get("sha") if r.status_code == 200 else None
+    data = {"message": f"update {filename}", "content": _b64.b64encode(image_bytes).decode()}
+    if sha:
+        data["sha"] = sha
+    r2 = _req.put(url, headers=_gh_headers(), json=data)
+    return r2.status_code in (200, 201)
+
+def github_load_image(filename):
+    """GitHub에서 이미지 로드."""
+    import requests as _req
+    repo = _gh_repo()
+    if not repo:
+        return None
+    url = f"https://api.github.com/repos/{repo}/contents/dashboard/{filename}"
+    r = _req.get(url, headers=_gh_headers())
+    if r.status_code == 200:
+        return _b64.b64decode(r.json()["content"])
+    return None
+
+def github_delete_image(filename):
+    """GitHub에서 이미지 삭제."""
+    import requests as _req
+    repo = _gh_repo()
+    if not repo:
+        return False
+    url = f"https://api.github.com/repos/{repo}/contents/dashboard/{filename}"
+    r = _req.get(url, headers=_gh_headers())
+    if r.status_code != 200:
+        return False
+    sha = r.json().get("sha")
+    data = {"message": f"delete {filename}", "sha": sha}
+    r2 = _req.delete(url, headers=_gh_headers(), json=data)
+    return r2.status_code == 200
+
+def load_dashboard_from_github():
+    """앱 시작 시 GitHub에서 대시보드 이미지 불러오기."""
+    if st.session_state.get("_gh_loaded"):
+        return
+    for key, fname in [("dash_schedule", "schedule.png"), ("dash_ty", "ty.png"), ("dash_ky", "ky.png")]:
+        if not st.session_state.get(key):
+            img = github_load_image(fname)
+            if img:
+                st.session_state[key] = img
+    st.session_state["_gh_loaded"] = True
+
+# ── 사용자 계정 관리 (st.secrets 우선, 없으면 session_state 내장) ──
+def _default_users():
+    return {
+        "admin": {"password": "admin2024!", "role": "admin"},
+        "ty":    {"password": "ty1234",     "role": "user"},
+        "yst":   {"password": "yst1234",    "role": "user"},
+    }
+
+def load_users():
+    """secrets에 [users] 섹션이 있으면 그걸 쓰고, 없으면 session_state 내장 계정 사용."""
+    try:
+        raw = dict(st.secrets.get("users", {}))
+        if raw:
+            # secrets 형식: admin = "admin2024!|admin"  또는  admin = "admin2024!"
+            users = {}
+            for k, v in raw.items():
+                parts = str(v).split("|")
+                users[k] = {"password": parts[0], "role": parts[1] if len(parts) > 1 else "user"}
+            return users
+    except Exception:
+        pass
+    if "users_db" not in st.session_state:
+        st.session_state.users_db = _default_users()
+    return st.session_state.users_db
+
+def save_users(users_dict):
+    """session_state에 저장 (secrets 미사용 환경용)."""
+    st.session_state.users_db = users_dict
+
+def check_login(user, pw):
+    users = load_users()
+    u = users.get(user)
+    if u and u["password"] == pw:
+        return True, u.get("role", "user")
+    return False, None
+
+def is_admin():
+    return st.session_state.get("role") == "admin"
+
+logo_html = '<img src="data:image/png;base64,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" class="logo-img">'
 
 st.markdown("""
 <style>
 :root {
-    --bg: #f4f6f9; --panel: #ffffff; --text: #111827; --muted: #64748b;
-    --line: #e5e7eb; --gold-light: #f3dfad; --dark: #2f2f33; --dark-hover: #1f1f23;
+    --bg: #f5f0eb; --panel: #ffffff; --text: #1c1008; --muted: #7a6a5a;
+    --line: #ddd0bc; --gold: #b8913a; --gold-light: #f3dfad; --gold-pale: #faf5ee;
+    --brown: #2c1a0e; --brown-mid: #4a2e1a; --brown-hover: #1e1008;
 }
 [data-testid="stHeader"], [data-testid="stToolbar"], [data-testid="stDecoration"], [data-testid="stStatusWidget"] {display: none;}
 #MainMenu {visibility: hidden;} footer {visibility: hidden;}
 .stApp { background: var(--bg); }
 .block-container { max-width: 1200px; padding-top: 2.5rem; padding-bottom: 2rem; }
-.badge { display:inline-block; background:var(--gold-light); color:var(--dark); padding:8px 18px; border-radius:999px; font-size:13px; font-weight:800; margin-bottom:20px; }
-.title { font-size:42px; line-height:1.15; font-weight:900; color:var(--text); margin:0 0 18px 0; letter-spacing:-1.2px; }
+.badge { display:inline-block; background:var(--gold-pale); color:var(--brown); padding:8px 18px; border-radius:999px; font-size:13px; font-weight:800; margin-bottom:20px; border:1px solid var(--gold-light); }
+.title { font-size:42px; line-height:1.15; font-weight:900; color:var(--brown); margin:0 0 18px 0; letter-spacing:-1.2px; }
 .desc { color:var(--muted); font-size:16px; line-height:1.75; margin-bottom:30px; }
-.logo-box { background:#ffffff; border-radius:14px; padding:18px; width:420px; max-width:100%; box-shadow:0 12px 32px rgba(15,23,42,0.06); border:1px solid var(--line); text-align:center; box-sizing:border-box; }
-.logo-img { width:360px; max-width:100%; display:block; margin:0 auto; }
-.version { margin-top:18px; background:#f8fafc; color:#94a3b8; text-align:center; font-size:12px; padding:10px; width:420px; max-width:100%; border-radius:10px; border:1px solid var(--line); box-sizing:border-box; }
-.login-title { font-size:34px; font-weight:900; color:var(--text); margin-bottom:10px; }
+.logo-box { background:#fff; border-radius:14px; padding:18px; width:420px; max-width:100%; box-shadow:0 4px 24px rgba(44,26,14,0.08); border:1px solid var(--line); text-align:center; box-sizing:border-box; }
+.logo-img { width:320px; max-width:100%; display:block; margin:0 auto; }
+.version { margin-top:18px; background:var(--gold-pale); color:var(--muted); text-align:center; font-size:12px; padding:10px; width:420px; max-width:100%; border-radius:10px; border:1px solid var(--gold-light); box-sizing:border-box; letter-spacing:1px; }
+.login-card { background:#fff; border-radius:18px; padding:40px; box-shadow:0 4px 32px rgba(44,26,14,0.10); border:1px solid var(--line); }
+.login-gold-bar { height:3px; background:linear-gradient(90deg,var(--brown),var(--gold),var(--gold-light),var(--gold),var(--brown)); border-radius:2px; margin-bottom:28px; }
+.login-title { font-size:30px; font-weight:900; color:var(--brown); margin-bottom:6px; }
 .login-sub { color:var(--muted); font-size:15px; margin-bottom:28px; }
-[data-testid="stTextInput"] label, [data-testid="stFileUploader"] label, [data-testid="stRadio"] label, [data-testid="stSlider"] label { color:var(--text); font-weight:600; }
-[data-testid="stTextInput"] input { background:#f8fafc; border:1px solid #d9dee7; color:var(--text); border-radius:10px; }
-div.stButton > button, div.stDownloadButton > button { background:var(--dark); color:white; border:none; border-radius:10px; height:48px; font-weight:800; }
-div.stButton > button:hover, div.stDownloadButton > button:hover { background:var(--dark-hover); color:white; border:none; }
-.small-text { color:#94a3b8; font-size:12px; margin-top:20px; }
-.topbar { background:#ffffff; border:1px solid var(--line); border-radius:18px; padding:22px 28px; display:flex; justify-content:space-between; align-items:center; box-shadow:0 12px 32px rgba(15,23,42,0.05); margin-bottom:26px; }
-.topbar-title { font-size:26px; font-weight:900; color:var(--text); }
+[data-testid="stTextInput"] label, [data-testid="stFileUploader"] label, [data-testid="stRadio"] label, [data-testid="stSlider"] label { color:var(--brown); font-weight:700; }
+[data-testid="stTextInput"] input { background:var(--gold-pale); border:1px solid var(--line); color:var(--brown); border-radius:10px; }
+[data-testid="stTextInput"] input:focus { border-color:var(--gold); box-shadow:0 0 0 2px rgba(184,145,58,0.15); }
+div.stButton > button, div.stDownloadButton > button { background:var(--brown); color:#f3dfad; border:none; border-radius:10px; height:48px; font-weight:800; letter-spacing:0.5px; }
+div.stButton > button:hover, div.stDownloadButton > button:hover { background:var(--brown-hover); color:#f3dfad; border:none; }
+.small-text { color:#b0a090; font-size:12px; margin-top:16px; }
+.topbar { background:#fff; border:1px solid var(--line); border-radius:18px; padding:22px 28px; display:flex; justify-content:space-between; align-items:center; box-shadow:0 4px 24px rgba(44,26,14,0.07); margin-bottom:26px; border-top:3px solid var(--gold); }
+.topbar-title { font-size:22px; font-weight:900; color:var(--brown); }
 .topbar-sub { font-size:14px; color:var(--muted); margin-top:5px; }
-.dashboard-card { background:#ffffff; border:1px solid var(--line); border-radius:18px; padding:26px; box-shadow:0 12px 32px rgba(15,23,42,0.05); min-height:150px; }
+.dashboard-card { background:#fff; border:1px solid var(--line); border-radius:18px; padding:26px; box-shadow:0 4px 24px rgba(44,26,14,0.06); min-height:150px; border-top:3px solid var(--gold); }
 .card-icon { font-size:28px; margin-bottom:12px; }
-.card-title { font-size:20px; font-weight:900; color:var(--text); margin-bottom:8px; }
+.card-title { font-size:20px; font-weight:900; color:var(--brown); margin-bottom:8px; }
 .card-desc { font-size:14px; color:var(--muted); line-height:1.6; }
-.section-title { font-size:20px; font-weight:900; color:var(--text); margin:18px 0 14px 0; }
-.content-card { background:#ffffff; border:1px solid var(--line); border-radius:18px; padding:28px; box-shadow:0 12px 32px rgba(15,23,42,0.05); margin-bottom:18px; }
-.page-title { font-size:30px; font-weight:900; color:var(--text); margin-bottom:8px; }
+.section-title { font-size:20px; font-weight:900; color:var(--brown); margin:18px 0 14px 0; }
+.content-card { background:#fff; border:1px solid var(--line); border-radius:18px; padding:28px; box-shadow:0 4px 24px rgba(44,26,14,0.06); margin-bottom:18px; border-top:3px solid var(--gold); }
+.page-title { font-size:30px; font-weight:900; color:var(--brown); margin-bottom:8px; }
 .page-sub { color:var(--muted); font-size:15px; }
+
+/* ── 사이드바 ── */
+[data-testid="stSidebar"] { background: #1e0e06 !important; border-right: 1px solid #3a2010; }
+[data-testid="stSidebar"] .stButton > button { background: transparent; color: #c8a878; border: 1px solid #3a2010; border-radius: 8px; font-weight: 600; text-align: left; justify-content: flex-start; }
+[data-testid="stSidebar"] .stButton > button:hover { background: #2c1a0e; color: #f3dfad; border-color: #b8913a; }
+[data-testid="stSidebar"] hr { border-color: #3a2010; }
+
+/* ── 탭 스타일 ── */
+[data-testid="stTabs"] [role="tablist"] { gap:4px; border-bottom:2px solid var(--line); }
+[data-testid="stTabs"] [role="tab"] { color:var(--muted); font-weight:700; font-size:14px; padding:10px 18px; border-radius:8px 8px 0 0; border:none; background:transparent; }
+[data-testid="stTabs"] [role="tab"][aria-selected="true"] { color:var(--brown); border-bottom:3px solid var(--gold); background:var(--gold-pale); }
+[data-testid="stTabs"] [role="tab"]:hover { background:var(--gold-pale); color:var(--brown); }
+[data-testid="stTabs"] [data-testid="stTabsContent"] { padding-top:1.5rem; }
+
+/* ── 업로더 ── */
+[data-testid="stFileUploader"] { background:var(--gold-pale); border:1.5px dashed var(--gold); border-radius:12px; padding:8px; }
+[data-testid="stFileUploader"] button { background:var(--brown) !important; color:#f3dfad !important; border-radius:8px !important; }
+
+/* ── 데이터프레임 ── */
+[data-testid="stDataFrame"] { border:1px solid var(--line); border-radius:12px; overflow:hidden; }
+
+/* ── 슬라이더 ── */
+[data-testid="stSlider"] [role="slider"] { background:var(--gold) !important; }
+[data-testid="stSlider"] [data-testid="stSliderTrack"] { background:var(--gold-light) !important; }
+
+/* ── 셀렉트박스/라디오 ── */
+[data-testid="stSelectbox"] select, [data-testid="stMultiSelect"] { border-color:var(--line) !important; border-radius:10px !important; }
+[data-testid="stRadio"] [role="radio"][aria-checked="true"] + div { color:var(--brown); font-weight:700; }
+
+/* ── 섹션 구분선 ── */
+hr { border-color:var(--line); }
+
+/* ── success/info/error 메시지 ── */
+[data-testid="stAlert"][data-baseweb="notification"] { border-radius:12px; border-left:4px solid var(--gold); }
+
+/* ── 캡션 ── */
+[data-testid="stCaptionContainer"] { color:var(--muted); }
+
+/* ── topbar 골드 상단 라인 ── */
+.topbar { border-top:3px solid var(--gold) !important; }
 </style>
 """, unsafe_allow_html=True)
 
 def login_page():
-    left, right = st.columns([1.05, 1], gap="large")
-    with left:
-        st.markdown(f"""
-        <div class="badge">TY · KY · YST 통합 업무 포털</div>
-        <div class="title">업무 자동화 시스템</div>
-        <div class="desc">전자상거래 · 3PL · 씨앤에어 업무를 한 곳에서 처리합니다.<br>파일 변환, 검증, 현장 운영 자료를 빠르게 자동화합니다.</div>
-        <div class="logo-box">{logo_html}</div>
-        <div class="version">TY LOGIS Internal System · v23.0</div>
+    st.markdown("""
+    <style>
+    [data-testid="stAppViewContainer"] > .main { padding: 0 !important; }
+    .block-container { padding: 0 !important; max-width: 100% !important; }
+    [data-testid="stSidebar"] { display: none !important; }
+    [data-testid="collapsedControl"] { display: none !important; }
+    </style>
+    """, unsafe_allow_html=True)
+
+    left_col, right_col = st.columns([1, 1])
+
+    with left_col:
+        st.markdown("""
+        <div style="background:#2c1a0e; min-height:100vh; padding:80px 56px; display:flex; flex-direction:column; justify-content:center; box-sizing:border-box;">
+          <div style="font-size:36px; font-weight:900; color:#f3dfad; letter-spacing:1px; margin-bottom:6px;">TY LOGIS</div>
+          <div style="font-size:12px; color:#b8913a; letter-spacing:5px; margin-bottom:28px;">INTERNAL SYSTEM</div>
+          <div style="height:1px; background:#4a2e1a; margin-bottom:32px;"></div>
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+            <div style="width:7px; height:7px; background:#b8913a; border-radius:50%; flex-shrink:0;"></div>
+            <div style="font-size:16px; color:#c8a878;">전자상거래 통관 · 택배 업무</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+            <div style="width:7px; height:7px; background:#b8913a; border-radius:50%; flex-shrink:0;"></div>
+            <div style="font-size:16px; color:#c8a878;">3PL BL 변환 · 현장 운영</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:16px;">
+            <div style="width:7px; height:7px; background:#b8913a; border-radius:50%; flex-shrink:0;"></div>
+            <div style="font-size:16px; color:#c8a878;">씨앤에어 자동화 신고</div>
+          </div>
+          <div style="display:flex; align-items:center; gap:12px; margin-bottom:40px;">
+            <div style="width:7px; height:7px; background:#b8913a; border-radius:50%; flex-shrink:0;"></div>
+            <div style="font-size:16px; color:#c8a878;">알리 HT 변환 · 주소 검증</div>
+          </div>
+          <div style="font-size:12px; color:#4a2e1a; letter-spacing:2px;">TY · KY · YST 통합 업무 포털 · v23.0</div>
+        </div>
         """, unsafe_allow_html=True)
-    with right:
-        st.markdown('<div class="login-title">로그인</div><div class="login-sub">계정과 비밀번호를 입력하세요.</div>', unsafe_allow_html=True)
-        user = st.text_input("사용자 계정", placeholder="예: admin")
-        pw = st.text_input("비밀번호", type="password", placeholder="기본 테스트 비밀번호: 1234")
-        if st.button("로그인"):
-            if (user == "admin" and pw == "1234") or (user == "ty" and pw == "1234") or (user == "yst" and pw == "1234"):
-                st.session_state.login = True; st.session_state.user = user; st.session_state.page = "main"; st.rerun()
-            else:
-                st.error("아이디 또는 비밀번호가 틀렸습니다.")
-        st.markdown('<div class="small-text">테스트 계정: admin / 1234, ty / 1234, yst / 1234</div>', unsafe_allow_html=True)
+
+    with right_col:
+        # 상단 여백으로 세로 중앙 맞추기
+        st.markdown("<div style='height: 28vh;'></div>", unsafe_allow_html=True)
+        st.markdown("""
+        <div style="padding: 0 40px;">
+        <div style="font-size:36px; font-weight:900; color:#2c1a0e; margin-bottom:8px;">로그인</div>
+        <div style="font-size:15px; color:#9a7a60; margin-bottom:20px;">계정과 비밀번호를 입력하세요.</div>
+        <div style="width:48px; height:3px; background:#b8913a; border-radius:2px; margin-bottom:32px;"></div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        _, fc, _ = st.columns([0.08, 0.84, 0.08])
+        with fc:
+            with st.form("login_form", clear_on_submit=False):
+                user = st.text_input("사용자 계정", placeholder="예: admin")
+                pw   = st.text_input("비밀번호", type="password", placeholder="비밀번호 입력")
+                submitted = st.form_submit_button("로그인", use_container_width=True)
+            if submitted:
+                ok, role = check_login(user.strip(), pw)
+                if ok:
+                    st.session_state.login = True
+                    st.session_state.user  = user.strip()
+                    st.session_state.role  = role
+                    st.session_state.page  = "main"
+                    st.rerun()
+                else:
+                    st.error("아이디 또는 비밀번호가 틀렸습니다.")
 
 def topbar():
+    if "role" not in st.session_state:
+        st.session_state.role = "user"
     page_map = {
         "main": "메인 대시보드",
         "ecommerce": "전자상거래",
@@ -1943,52 +2144,189 @@ def topbar():
 
 
 def main_page():
+    today_str = datetime.now().strftime("%Y년 %m월 %d일")
+    load_dashboard_from_github()
+
+    # ── 사이드바 ──
+    with st.sidebar:
+        st.markdown(f"""
+        <div style="background:#2c1a0e; margin:-1rem -1rem 0; padding:28px 20px 20px; text-align:center;">
+          <div style="font-size:22px; font-weight:900; color:#f3dfad; letter-spacing:1px;">TY LOGIS</div>
+          <div style="font-size:9px; color:#b8913a; letter-spacing:4px; margin-top:3px;">INTERNAL SYSTEM</div>
+          <div style="height:1px; background:#4a2e1a; margin:14px 0 10px;"></div>
+          <div style="font-size:11px; color:#7a5a30;">{st.session_state.user} 님</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+        st.markdown('<div style="font-size:11px;color:#b8913a;letter-spacing:2px;padding:0 4px;margin-bottom:6px;">NAVIGATION</div>', unsafe_allow_html=True)
+
+        if st.button("🏠  메인 대시보드", use_container_width=True, key="nav_main"):
+            st.session_state.page = "main"; st.rerun()
+        if st.button("🛒  전자상거래", use_container_width=True, key="nav_ecom"):
+            st.session_state.page = "ecommerce"; st.rerun()
+        if st.button("🚢  SEA & AIR", use_container_width=True, key="nav_sea"):
+            st.session_state.page = "seaair"; st.rerun()
+        if st.button("🏭  3PL", use_container_width=True, key="nav_3pl"):
+            st.session_state.page = "threepl"; st.rerun()
+
+        st.markdown("<div style='margin-top:16px;'></div>", unsafe_allow_html=True)
+        st.divider()
+
+        if is_admin():
+            if st.button("👤  계정 관리", use_container_width=True, key="nav_admin"):
+                st.session_state.page = "admin"; st.rerun()
+        if st.button("🚪  로그아웃", use_container_width=True, key="nav_logout"):
+            st.session_state.login = False
+            st.session_state.user  = ""
+            st.session_state.role  = "user"
+            st.session_state.page  = "main"
+            st.rerun()
+
+        st.markdown(f'<div style="font-size:10px;color:#b8913a;text-align:center;margin-top:20px;">{today_str}</div>', unsafe_allow_html=True)
+
+    # ── 메인 콘텐츠: 현장 현황 대시보드 ──
+    st.markdown(f'<div class="topbar"><div><div class="topbar-title">오늘의 현장 현황</div><div class="topbar-sub">{today_str} · 접속: {st.session_state.user}</div></div><div class="badge">v23.0</div></div>', unsafe_allow_html=True)
+
+    if is_admin():
+        with st.expander("🔧 관리자 — 이미지 업로드", expanded=False):
+            ua, ub, uc = st.columns(3)
+            with ua:
+                up_sched = st.file_uploader("📅 작업일정", type=["png","jpg","jpeg","webp"], key="up_sched")
+                if up_sched:
+                    img_bytes = up_sched.read()
+                    st.session_state.dash_schedule = img_bytes
+                    with st.spinner("저장 중..."):
+                        ok = github_upload_image(img_bytes, "schedule.png")
+                    st.success("작업일정 등록 완료!" + (" (영구저장)" if ok else " (임시저장)"))
+                if st.session_state.dash_schedule:
+                    if st.button("🗑 작업일정 삭제", key="del_sched"):
+                        st.session_state.dash_schedule = None
+                        github_delete_image("schedule.png")
+                        st.rerun()
+            with ub:
+                up_ty = st.file_uploader("📊 TY 현황표", type=["png","jpg","jpeg","webp"], key="up_ty")
+                if up_ty:
+                    img_bytes = up_ty.read()
+                    st.session_state.dash_ty = img_bytes
+                    with st.spinner("저장 중..."):
+                        ok = github_upload_image(img_bytes, "ty.png")
+                    st.success("TY 현황표 등록 완료!" + (" (영구저장)" if ok else " (임시저장)"))
+                if st.session_state.dash_ty:
+                    if st.button("🗑 TY 현황표 삭제", key="del_ty"):
+                        st.session_state.dash_ty = None
+                        github_delete_image("ty.png")
+                        st.rerun()
+            with uc:
+                up_ky = st.file_uploader("📊 KY 현황표", type=["png","jpg","jpeg","webp"], key="up_ky")
+                if up_ky:
+                    img_bytes = up_ky.read()
+                    st.session_state.dash_ky = img_bytes
+                    with st.spinner("저장 중..."):
+                        ok = github_upload_image(img_bytes, "ky.png")
+                    st.success("KY 현황표 등록 완료!" + (" (영구저장)" if ok else " (임시저장)"))
+                if st.session_state.dash_ky:
+                    if st.button("🗑 KY 현황표 삭제", key="del_ky"):
+                        st.session_state.dash_ky = None
+                        github_delete_image("ky.png")
+                        st.rerun()
+
+    tab_sched, tab_ty, tab_ky = st.tabs(["📅 작업일정", "📊 TY 현황표", "📊 KY 현황표"])
+    with tab_sched:
+        if st.session_state.dash_schedule:
+            st.markdown(f'<div style="font-size:13px;color:#9a7a60;margin-bottom:8px;">{today_str} 작업일정</div>', unsafe_allow_html=True)
+            st.image(st.session_state.dash_schedule, use_container_width=True)
+        else:
+            st.markdown('<div style="text-align:center;padding:60px 0;color:#b8913a;font-size:15px;">등록된 작업일정이 없습니다.</div>', unsafe_allow_html=True)
+    with tab_ty:
+        if st.session_state.dash_ty:
+            st.markdown(f'<div style="font-size:13px;color:#9a7a60;margin-bottom:8px;">{today_str} TY 작업현황표</div>', unsafe_allow_html=True)
+            st.image(st.session_state.dash_ty, use_container_width=True)
+        else:
+            st.markdown('<div style="text-align:center;padding:60px 0;color:#b8913a;font-size:15px;">등록된 TY 현황표가 없습니다.</div>', unsafe_allow_html=True)
+    with tab_ky:
+        if st.session_state.dash_ky:
+            st.markdown(f'<div style="font-size:13px;color:#9a7a60;margin-bottom:8px;">{today_str} KY 작업현황표</div>', unsafe_allow_html=True)
+            st.image(st.session_state.dash_ky, use_container_width=True)
+        else:
+            st.markdown('<div style="text-align:center;padding:60px 0;color:#b8913a;font-size:15px;">등록된 KY 현황표가 없습니다.</div>', unsafe_allow_html=True)
+
+
+def admin_page():
+    """관리자 전용: 계정 생성/삭제/비밀번호 변경."""
+    if not is_admin():
+        st.error("관리자 계정으로만 접근할 수 있습니다.")
+        return
     topbar()
+    if st.button("← 메인으로 돌아가기", key="admin_back"):
+        st.session_state.page = "main"
+        st.rerun()
 
-    st.markdown('<div class="section-title">부서별 업무 메뉴</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="content-card"><div class="page-title">👤 계정 관리</div>'
+        '<div class="page-sub">사용자 계정을 생성·수정·삭제합니다. 관리자 전용 페이지입니다.</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    c1, c2, c3 = st.columns(3, gap="large")
+    users = load_users()
 
-    with c1:
-        st.markdown(
-            '<div class="dashboard-card"><div class="card-icon">🛒</div>'
-            '<div class="card-title">전자상거래</div>'
-            '<div class="card-desc">전자상 통관·택배·경동리스트 관련 업무를 처리합니다.</div></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("전자상거래 들어가기", use_container_width=True, key="go_ecom"):
-            st.session_state.page = "ecommerce"
-            st.rerun()
+    # ── 현재 계정 목록 ──
+    st.markdown('<div class="section-title">현재 등록 계정</div>', unsafe_allow_html=True)
+    for uname, uinfo in list(users.items()):
+        c1, c2, c3 = st.columns([2, 2, 1])
+        c1.write(f"**{uname}**")
+        c2.write(f"권한: {'🔑 관리자' if uinfo.get('role') == 'admin' else '👤 일반'}")
+        if uname != st.session_state.user:   # 자기 자신은 삭제 불가
+            if c3.button("삭제", key=f"del_{uname}"):
+                del users[uname]
+                save_users(users)
+                st.success(f"{uname} 계정이 삭제되었습니다.")
+                st.rerun()
+        else:
+            c3.write("(본인)")
 
-    with c2:
-        st.markdown(
-            '<div class="dashboard-card"><div class="card-icon">🚢</div>'
-            '<div class="card-title">SEA & AIR</div>'
-            '<div class="card-desc">해상·항공 포워딩 관련 업무 메뉴를 구성할 수 있습니다.</div></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("SEA & AIR 들어가기", use_container_width=True, key="go_seaair"):
-            st.session_state.page = "seaair"
-            st.rerun()
+    st.divider()
 
-    with c3:
-        st.markdown(
-            '<div class="dashboard-card"><div class="card-icon">🏭</div>'
-            '<div class="card-title">3PL</div>'
-            '<div class="card-desc">BL/PDF 변환, 현장 운영, 적재 관련 업무를 처리합니다.</div></div>',
-            unsafe_allow_html=True,
-        )
-        if st.button("3PL 들어가기", use_container_width=True, key="go_3pl"):
-            st.session_state.page = "threepl"
+    # ── 새 계정 만들기 ──
+    st.markdown('<div class="section-title">새 계정 만들기</div>', unsafe_allow_html=True)
+    with st.form("create_user_form"):
+        new_id   = st.text_input("아이디")
+        new_pw   = st.text_input("비밀번호", type="password")
+        new_pw2  = st.text_input("비밀번호 확인", type="password")
+        new_role = st.selectbox("권한", ["user", "admin"], format_func=lambda x: "관리자" if x == "admin" else "일반 사용자")
+        ok_btn   = st.form_submit_button("계정 생성", use_container_width=True)
+    if ok_btn:
+        if not new_id or not new_pw:
+            st.error("아이디와 비밀번호를 입력하세요.")
+        elif new_pw != new_pw2:
+            st.error("비밀번호가 일치하지 않습니다.")
+        elif new_id in users:
+            st.error("이미 존재하는 아이디입니다.")
+        else:
+            users[new_id] = {"password": new_pw, "role": new_role}
+            save_users(users)
+            st.success(f"'{new_id}' 계정이 생성되었습니다.")
             st.rerun()
 
     st.divider()
 
-    if st.button("로그아웃"):
-        st.session_state.login = False
-        st.session_state.user = ""
-        st.session_state.page = "main"
-        st.rerun()
+    # ── 비밀번호 변경 ──
+    st.markdown('<div class="section-title">비밀번호 변경</div>', unsafe_allow_html=True)
+    with st.form("change_pw_form"):
+        target  = st.selectbox("계정 선택", list(users.keys()))
+        chg_pw  = st.text_input("새 비밀번호", type="password")
+        chg_pw2 = st.text_input("새 비밀번호 확인", type="password")
+        chg_btn = st.form_submit_button("비밀번호 변경", use_container_width=True)
+    if chg_btn:
+        if not chg_pw:
+            st.error("비밀번호를 입력하세요.")
+        elif chg_pw != chg_pw2:
+            st.error("비밀번호가 일치하지 않습니다.")
+        else:
+            users[target]["password"] = chg_pw
+            save_users(users)
+            st.success(f"'{target}' 비밀번호가 변경되었습니다.")
+            st.rerun()
 
 
 def ecommerce_page():
@@ -3644,7 +3982,11 @@ def ali_ht_convert_page():
 if not st.session_state.login:
     login_page()
 else:
-    if st.session_state.page == "bl_convert":
+    if "role" not in st.session_state:
+        st.session_state.role = "user"
+    if st.session_state.page == "admin":
+        admin_page()
+    elif st.session_state.page == "bl_convert":
         bl_convert_page()
     elif st.session_state.page == "kyungdong":
         kyungdong_page()
