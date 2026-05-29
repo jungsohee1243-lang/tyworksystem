@@ -3161,6 +3161,14 @@ def kyungdong_page():
 
         # 스캔 누적 업로드 (모든 계정 가능)
         with st.expander(f"📤 TY 티와이 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
+            if st.button("🔄 GitHub에서 최신 스캔 데이터 새로고침", key="refresh_scan_ty"):
+                _refreshed = github_load_image("ty_scan_cumulative.xlsx")
+                if _refreshed:
+                    st.session_state["_scan_data_ty"] = _refreshed
+                    st.success("✅ 최신 스캔 데이터 불러왔습니다.")
+                    st.rerun()
+                else:
+                    st.warning("GitHub에서 스캔 파일을 찾을 수 없습니다.")
             up_scan_ty = st.file_uploader(
                 f"TY 티와이 스캔 파일 (날짜-차수 컬럼 형태)",
                 type=["xlsx", "xls"], key="dash_up_scan_ty"
@@ -3235,12 +3243,13 @@ def kyungdong_page():
                     st.error(f"오류: {e}")
                     import traceback; st.code(traceback.format_exc())
 
-        # GitHub에서 항상 최신 데이터 로드 (캐시 무시)
-        scan_data_ty = github_load_image("ty_scan_cumulative.xlsx")
-        if scan_data_ty:
-            st.session_state["_scan_data_ty"] = scan_data_ty
-        else:
-            scan_data_ty = st.session_state.get("_scan_data_ty")
+        # 세션에 데이터 있으면 우선 사용 (업로드 직후 GitHub CDN 반영 전 덮어쓰기 방지)
+        # 세션에 없으면 GitHub에서 로드 (새 탭/새 세션 시 최신 데이터 반영)
+        scan_data_ty = st.session_state.get("_scan_data_ty")
+        if not scan_data_ty:
+            scan_data_ty = github_load_image("ty_scan_cumulative.xlsx")
+            if scan_data_ty:
+                st.session_state["_scan_data_ty"] = scan_data_ty
 
         if scan_data_ty:
             try:
@@ -3543,6 +3552,14 @@ def kyungdong_page():
 
         # 스캔 누적 업로드 (모든 계정 가능)
         with st.expander(f"📤 KY 쾌연 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
+            if st.button("🔄 GitHub에서 최신 스캔 데이터 새로고침", key="refresh_scan_ky"):
+                _refreshed_ky = github_load_image("ky_scan_cumulative.xlsx")
+                if _refreshed_ky:
+                    st.session_state["_scan_data_ky"] = _refreshed_ky
+                    st.success("✅ 최신 스캔 데이터 불러왔습니다.")
+                    st.rerun()
+                else:
+                    st.warning("GitHub에서 스캔 파일을 찾을 수 없습니다.")
             up_scan_ky = st.file_uploader(
                 f"KY 쾌연 스캔 파일 (날짜-차수 컬럼 형태)",
                 type=["xlsx", "xls"], key="dash_up_scan_ky"
@@ -3606,12 +3623,13 @@ def kyungdong_page():
                     st.error(f"오류: {e}")
                     import traceback; st.code(traceback.format_exc())
 
-        # GitHub에서 항상 최신 데이터 로드 (캐시 무시)
-        scan_data_ky = github_load_image("ky_scan_cumulative.xlsx")
-        if scan_data_ky:
-            st.session_state["_scan_data_ky"] = scan_data_ky
-        else:
-            scan_data_ky = st.session_state.get("_scan_data_ky")
+        # 세션에 데이터 있으면 우선 사용 (업로드 직후 GitHub CDN 반영 전 덮어쓰기 방지)
+        # 세션에 없으면 GitHub에서 로드 (새 탭/새 세션 시 최신 데이터 반영)
+        scan_data_ky = st.session_state.get("_scan_data_ky")
+        if not scan_data_ky:
+            scan_data_ky = github_load_image("ky_scan_cumulative.xlsx")
+            if scan_data_ky:
+                st.session_state["_scan_data_ky"] = scan_data_ky
 
         if scan_data_ky:
             try:
