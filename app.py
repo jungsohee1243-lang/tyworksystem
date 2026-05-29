@@ -3191,14 +3191,26 @@ def kyungdong_page():
                     st.error(f"오류: {e}")
                     import traceback; st.code(traceback.format_exc())
 
-        scan_data_ty = st.session_state.get("_scan_data_ty")
-        if not scan_data_ty:
-            scan_data_ty = github_load_image("ty_scan_cumulative.xlsx")
-            if scan_data_ty:
-                st.session_state["_scan_data_ty"] = scan_data_ty
+        # GitHub에서 항상 최신 데이터 로드 (캐시 무시)
+        scan_data_ty = github_load_image("ty_scan_cumulative.xlsx")
+        if scan_data_ty:
+            st.session_state["_scan_data_ty"] = scan_data_ty
+        else:
+            scan_data_ty = st.session_state.get("_scan_data_ty")
+
+        if scan_data_ty:
+            try:
+                import io as _io_chk
+                _df_chk = pd.read_excel(_io_chk.BytesIO(scan_data_ty))
+                _total = 0
+                for _c in _df_chk.columns:
+                    _total += _df_chk[_c].dropna().shape[0]
+                st.caption(f"📦 현재 누적 스캔 컬럼 {len(_df_chk.columns)}개 · 총 운송장 {_total:,}건")
+            except Exception as _e:
+                st.caption(f"⚠️ 스캔파일 읽기 실패: {_e}")
 
         if not scan_data_ty:
-            st.warning(f"📋 먼저 관리자 메뉴에서 TY 티와이 스캔 파일을 업로드해 주세요.")
+            st.warning(f"📋 먼저 TY 티와이 스캔 파일을 업로드해 주세요.")
         else:
             send_file_ty = st.file_uploader(
                 f"📨 오늘의 TY 티와이 경동 발송리스트 파일 업로드",
@@ -3248,12 +3260,15 @@ def kyungdong_page():
                         sorted_dates_ty = sorted(scan_dict_ty.keys())
                         today_key_ty = f"{today_kst_ty.month:02d}{today_kst_ty.day:02d}"
 
-                        latest_send_ty = None
-                        if send_by_date_ty:
-                            latest_send_ty = sorted(send_by_date_ty.keys())[-1]
-
-                        focus_date_ty = today_key_ty if today_key_ty in send_by_date_ty else (latest_send_ty or today_key_ty)
+                        # 항상 오늘 날짜 기준
+                        focus_date_ty = today_key_ty
                         focus_label_ty = f"{int(focus_date_ty[:2])}월 {int(focus_date_ty[2:]):02d}일"
+
+                        # 오늘 스캔이 없으면 안내
+                        if focus_date_ty not in scan_dict_ty:
+                            st.warning(f"⚠️ 오늘({focus_label_ty}) 스캔 데이터가 없습니다. 스캔 파일에 오늘 날짜 컬럼이 있는지 확인해주세요.")
+                        if focus_date_ty not in send_by_date_ty:
+                            st.info(f"📋 오늘({focus_label_ty}) 발송 데이터가 발송리스트에 없습니다.")
 
                         today_scan_set_ty = scan_dict_ty.get(focus_date_ty, set())
                         today_sent_set_ty = send_by_date_ty.get(focus_date_ty, set())
@@ -3547,14 +3562,26 @@ def kyungdong_page():
                     st.error(f"오류: {e}")
                     import traceback; st.code(traceback.format_exc())
 
-        scan_data_ky = st.session_state.get("_scan_data_ky")
-        if not scan_data_ky:
-            scan_data_ky = github_load_image("ky_scan_cumulative.xlsx")
-            if scan_data_ky:
-                st.session_state["_scan_data_ky"] = scan_data_ky
+        # GitHub에서 항상 최신 데이터 로드 (캐시 무시)
+        scan_data_ky = github_load_image("ky_scan_cumulative.xlsx")
+        if scan_data_ky:
+            st.session_state["_scan_data_ky"] = scan_data_ky
+        else:
+            scan_data_ky = st.session_state.get("_scan_data_ky")
+
+        if scan_data_ky:
+            try:
+                import io as _io_chk2
+                _df_chk2 = pd.read_excel(_io_chk2.BytesIO(scan_data_ky))
+                _total2 = 0
+                for _c in _df_chk2.columns:
+                    _total2 += _df_chk2[_c].dropna().shape[0]
+                st.caption(f"📦 현재 누적 스캔 컬럼 {len(_df_chk2.columns)}개 · 총 운송장 {_total2:,}건")
+            except Exception as _e:
+                st.caption(f"⚠️ 스캔파일 읽기 실패: {_e}")
 
         if not scan_data_ky:
-            st.warning(f"📋 먼저 관리자 메뉴에서 KY 쾌연 스캔 파일을 업로드해 주세요.")
+            st.warning(f"📋 먼저 KY 쾌연 스캔 파일을 업로드해 주세요.")
         else:
             send_file_ky = st.file_uploader(
                 f"📨 오늘의 KY 쾌연 경동 발송리스트 파일 업로드",
@@ -3604,12 +3631,15 @@ def kyungdong_page():
                         sorted_dates_ky = sorted(scan_dict_ky.keys())
                         today_key_ky = f"{today_kst_ky.month:02d}{today_kst_ky.day:02d}"
 
-                        latest_send_ky = None
-                        if send_by_date_ky:
-                            latest_send_ky = sorted(send_by_date_ky.keys())[-1]
-
-                        focus_date_ky = today_key_ky if today_key_ky in send_by_date_ky else (latest_send_ky or today_key_ky)
+                        # 항상 오늘 날짜 기준
+                        focus_date_ky = today_key_ky
                         focus_label_ky = f"{int(focus_date_ky[:2])}월 {int(focus_date_ky[2:]):02d}일"
+
+                        # 오늘 스캔이 없으면 안내
+                        if focus_date_ky not in scan_dict_ky:
+                            st.warning(f"⚠️ 오늘({focus_label_ky}) 스캔 데이터가 없습니다. 스캔 파일에 오늘 날짜 컬럼이 있는지 확인해주세요.")
+                        if focus_date_ky not in send_by_date_ky:
+                            st.info(f"📋 오늘({focus_label_ky}) 발송 데이터가 발송리스트에 없습니다.")
 
                         today_scan_set_ky = scan_dict_ky.get(focus_date_ky, set())
                         today_sent_set_ky = send_by_date_ky.get(focus_date_ky, set())
