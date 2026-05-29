@@ -3828,12 +3828,12 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         group_total = ali_ht_money(sum(total_val(i) for i in idxs))
         if not (150 <= group_total <= 152):
             continue
-        # 목표: 148~149불 (148.99 이하)
-        target = 148.99
+        # 목표: 145~146불 (145.99 이하)
+        target = 145.99
         need = ali_ht_money(group_total - target)
         if need <= 0:
             continue
-        # 단가 높은 품목부터 1불씩 차감
+        # 단가 높은 품목부터 최대 6불씩 차감 (여러 품목이면 나눠서)
         candidates = []
         for i in idxs:
             for desc_col, qty_col, unit_col in detail_groups:
@@ -3853,8 +3853,8 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             q = qty_val(i, qty_col)
             old_unit = unit_val(i, unit_col)
             old_row_total = total_val(i)
-            # 1불씩만 차감
-            reduce_unit = min(1.00, ali_ht_money(remaining / q), old_unit - 0.01)
+            # 품목당 최대 6불 차감, 남은 필요금액 이내에서 조정
+            reduce_unit = min(6.00, ali_ht_money(remaining / q), old_unit - 0.01)
             if reduce_unit <= 0:
                 continue
             new_unit = ali_ht_money(old_unit - reduce_unit)
@@ -3870,11 +3870,17 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             before_lines.append(f"{row_hawb(i)} {desc} 단가 {old_unit}, 총금액 {old_row_total}")
             after_lines.append(f"{row_hawb(i)} {desc} 단가 {new_unit}, 총금액 {new_row_total}")
             remaining = ali_ht_money(remaining - actual_reduce)
+
+        # 보정 완료 후 V셀 3 → 1로 변경
         if modified:
+            for i in idxs:
+                if ali_ht_clean_text(df.at[i, col_v]) == "3":
+                    excel_set(i, col_v, "1")
+                    v_changed_cells.add((i, col_v))
             v3_150_adjusted_count += 1
-            add_log("V3_150보정", idxs, modified, "상세단가/BA 총금액",
+            add_log("V3_150보정", idxs, modified, "상세단가/BA 총금액 + V용도구분",
                     " / ".join(before_lines), " / ".join(after_lines),
-                    f"V=3 동일고객 합계 {group_total}불 → 148~149불 보정 (배송비포함 세금기준 조정)",
+                    f"V=3 동일고객 합계 {group_total}불 → 145~146불 보정 후 V=3→1 변경 (배송비포함 세금기준 조정)",
                     modified[0])
     # ────────────────────────────────────────────────────────────────────────────
 
