@@ -2732,615 +2732,813 @@ def kyungdong_page():
         unsafe_allow_html=True,
     )
 
-    tab1, tab2, tab3, tab4 = st.tabs(["① 멀티건 송장 매칭", "② 동춘경동 자동변환", "③ 학익경동 자동변환", "④ 발송 통계"])
+    main_tab1, main_tab2, main_tab3 = st.tabs(["📦 경동 변환", "📊 TY 발송 통계", "📊 KY 발송 통계"])
+
+    # 변환 탭 내부에 다시 3개 서브탭
+    with main_tab1:
+        tab1, tab2, tab3 = st.tabs(["① 멀티건 송장 매칭", "② 동춘경동 자동변환", "③ 학익경동 자동변환"])
 
     # ---------------- TAB 1 ----------------
-    with tab1:
-        st.subheader("멀티건 송장 매칭 (조회불가 포함)")
-        uploaded = st.file_uploader("멀티건모음 엑셀 업로드", type=["xlsx", "xls"], key="kd_multi")
+        with tab1:
+            st.subheader("멀티건 송장 매칭 (조회불가 포함)")
+            uploaded = st.file_uploader("멀티건모음 엑셀 업로드", type=["xlsx", "xls"], key="kd_multi")
 
-        e_text = st.text_area(
-            "조회할 택배송장(E) 목록 (선택)",
-            height=120,
-            placeholder="예)\n507144526830\n507144526841\n...",
-            key="kd_e_text",
-        )
+            e_text = st.text_area(
+                "조회할 택배송장(E) 목록 (선택)",
+                height=120,
+                placeholder="예)\n507144526830\n507144526841\n...",
+                key="kd_e_text",
+            )
 
-        if uploaded:
-            xls = pd.ExcelFile(uploaded)
-            sheet = st.selectbox("시트 선택", xls.sheet_names, key="kd_sheet")
-            header_mode = st.radio("첫 줄이 컬럼명(헤더)인가요?", ["네", "아니요"], horizontal=True, key="kd_header")
+            if uploaded:
+                xls = pd.ExcelFile(uploaded)
+                sheet = st.selectbox("시트 선택", xls.sheet_names, key="kd_sheet")
+                header_mode = st.radio("첫 줄이 컬럼명(헤더)인가요?", ["네", "아니요"], horizontal=True, key="kd_header")
 
-            if header_mode == "네":
-                df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
-                st.caption(f"행 {len(df):,} / 컬럼 {len(df.columns)}")
+                if header_mode == "네":
+                    df = pd.read_excel(xls, sheet_name=sheet, dtype=str)
+                    st.caption(f"행 {len(df):,} / 컬럼 {len(df.columns)}")
 
-                e_col = st.selectbox(
-                    "E열(택배송장) 컬럼",
-                    df.columns,
-                    index=df.columns.get_loc("CJ单号") if "CJ单号" in df.columns else 0,
-                    key="kd_e_col",
-                )
+                    e_col = st.selectbox(
+                        "E열(택배송장) 컬럼",
+                        df.columns,
+                        index=df.columns.get_loc("CJ单号") if "CJ单号" in df.columns else 0,
+                        key="kd_e_col",
+                    )
 
-                f_col = st.selectbox(
-                    "F열(세관신고송장) 컬럼",
-                    df.columns,
-                    index=df.columns.get_loc("主单号") if "主单号" in df.columns else 0,
-                    key="kd_f_col",
-                )
+                    f_col = st.selectbox(
+                        "F열(세관신고송장) 컬럼",
+                        df.columns,
+                        index=df.columns.get_loc("主单号") if "主单号" in df.columns else 0,
+                        key="kd_f_col",
+                    )
 
-            else:
-                df = pd.read_excel(xls, sheet_name=sheet, dtype=str, header=None)
-                df.columns = [
-                    string.ascii_uppercase[i] if i < 26 else f"COL{i+1}"
-                    for i in range(len(df.columns))
-                ]
+                else:
+                    df = pd.read_excel(xls, sheet_name=sheet, dtype=str, header=None)
+                    df.columns = [
+                        string.ascii_uppercase[i] if i < 26 else f"COL{i+1}"
+                        for i in range(len(df.columns))
+                    ]
 
-                st.caption(f"행 {len(df):,} / 컬럼 {len(df.columns)} (헤더 없음)")
+                    st.caption(f"행 {len(df):,} / 컬럼 {len(df.columns)} (헤더 없음)")
 
-                e_col = st.selectbox(
-                    "E열 문자",
-                    df.columns,
-                    index=df.columns.get_loc("E") if "E" in df.columns else 0,
-                    key="kd_e_col_nohead",
-                )
+                    e_col = st.selectbox(
+                        "E열 문자",
+                        df.columns,
+                        index=df.columns.get_loc("E") if "E" in df.columns else 0,
+                        key="kd_e_col_nohead",
+                    )
 
-                f_col = st.selectbox(
-                    "F열 문자",
-                    df.columns,
-                    index=df.columns.get_loc("F") if "F" in df.columns else 0,
-                    key="kd_f_col_nohead",
-                )
+                    f_col = st.selectbox(
+                        "F열 문자",
+                        df.columns,
+                        index=df.columns.get_loc("F") if "F" in df.columns else 0,
+                        key="kd_f_col_nohead",
+                    )
 
-            with st.expander("데이터 미리보기(상위 30행)"):
-                st.dataframe(df.head(30), use_container_width=True)
+                with st.expander("데이터 미리보기(상위 30행)"):
+                    st.dataframe(df.head(30), use_container_width=True)
 
-            if st.button("✅ 매칭 생성", type="primary", use_container_width=True, key="kd_make_match"):
-                query = kd_parse_list(e_text)
+                if st.button("✅ 매칭 생성", type="primary", use_container_width=True, key="kd_make_match"):
+                    query = kd_parse_list(e_text)
 
-                base = df.copy()
-                base[e_col] = base[e_col].apply(kd_norm_str)
-                base[f_col] = base[f_col].apply(kd_norm_str)
-                base = base[base[e_col] != ""]
+                    base = df.copy()
+                    base[e_col] = base[e_col].apply(kd_norm_str)
+                    base[f_col] = base[f_col].apply(kd_norm_str)
+                    base = base[base[e_col] != ""]
 
-                not_in_file = []
+                    not_in_file = []
 
-                if query:
-                    all_e = set(base[e_col].tolist())
-                    not_in_file = [e for e in query if e not in all_e]
-                    base = base[base[e_col].isin(query)].copy()
+                    if query:
+                        all_e = set(base[e_col].tolist())
+                        not_in_file = [e for e in query if e not in all_e]
+                        base = base[base[e_col].isin(query)].copy()
 
-                valid = base[base[f_col] != ""][[e_col, f_col]].copy()
-                invalid = base[base[f_col] == ""][[e_col]].copy()
+                    valid = base[base[f_col] != ""][[e_col, f_col]].copy()
+                    invalid = base[base[f_col] == ""][[e_col]].copy()
 
-                out1 = valid.rename(columns={e_col: "택배송장(E)", f_col: "세관신고송장(F)"})
-                out1["비고"] = "정상 매칭"
+                    out1 = valid.rename(columns={e_col: "택배송장(E)", f_col: "세관신고송장(F)"})
+                    out1["비고"] = "정상 매칭"
 
-                out2 = invalid.rename(columns={e_col: "택배송장(E)"})
-                out2["비고"] = "조회안되는송장(F 없음)"
+                    out2 = invalid.rename(columns={e_col: "택배송장(E)"})
+                    out2["비고"] = "조회안되는송장(F 없음)"
 
-                if not_in_file:
-                    add = pd.DataFrame({
-                        "택배송장(E)": not_in_file,
-                        "비고": ["조회안되는송장(파일에 없음)"] * len(not_in_file),
-                    })
-                    out2 = pd.concat([out2, add], ignore_index=True)
+                    if not_in_file:
+                        add = pd.DataFrame({
+                            "택배송장(E)": not_in_file,
+                            "비고": ["조회안되는송장(파일에 없음)"] * len(not_in_file),
+                        })
+                        out2 = pd.concat([out2, add], ignore_index=True)
 
-                out1 = out1.drop_duplicates().reset_index(drop=True)
-                out2 = out2.drop_duplicates().reset_index(drop=True)
+                    out1 = out1.drop_duplicates().reset_index(drop=True)
+                    out2 = out2.drop_duplicates().reset_index(drop=True)
 
-                st.success(f"정상매칭 {len(out1):,}건 / 조회안되는송장 {len(out2):,}건")
+                    st.success(f"정상매칭 {len(out1):,}건 / 조회안되는송장 {len(out2):,}건")
 
-                c1, c2 = st.columns(2)
-                with c1:
-                    st.markdown("### 정상매칭")
-                    st.dataframe(out1.head(200), use_container_width=True)
-                with c2:
-                    st.markdown("### 조회안되는송장")
-                    st.dataframe(out2.head(200), use_container_width=True)
+                    c1, c2 = st.columns(2)
+                    with c1:
+                        st.markdown("### 정상매칭")
+                        st.dataframe(out1.head(200), use_container_width=True)
+                    with c2:
+                        st.markdown("### 조회안되는송장")
+                        st.dataframe(out2.head(200), use_container_width=True)
+
+                    bio = io.BytesIO()
+                    with pd.ExcelWriter(bio, engine="openpyxl") as w:
+                        out1.to_excel(w, index=False, sheet_name="정상매칭")
+                        out2.to_excel(w, index=False, sheet_name="조회안되는송장")
+                    bio.seek(0)
+
+                    st.download_button(
+                        "⬇️ 엑셀 다운로드 (정상매칭/조회안되는송장)",
+                        bio.getvalue(),
+                        file_name="멀티건_E-F_매칭_조회불가포함.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        use_container_width=True,
+                        key="kd_match_download",
+                    )
+
+        # ---------------- TAB 2 ----------------
+        with tab2:
+            st.subheader("동춘경동 자동변환 (멀티건 분할 + 중량/BOX 처리 + A열 숫자)")
+            st.write("**멀티건 매칭파일(정상매칭 시트)** + **동춘경동 신규파일**을 업로드하세요.")
+
+            match_file = st.file_uploader(
+                "멀티건 매칭파일(.xlsx) — 정상매칭 시트 포함",
+                type=["xlsx"],
+                key="kd_dc_match",
+            )
+
+            hak_file = st.file_uploader(
+                "동춘경동 신규파일(.xlsx)",
+                type=["xlsx"],
+                key="kd_dc_file",
+            )
+
+            if match_file and hak_file:
+                match_df = pd.read_excel(match_file, sheet_name="정상매칭", dtype=str)
+                hak_df = pd.read_excel(hak_file, dtype=str)
+
+                if "세관신고송장(F)" not in match_df.columns or "택배송장(E)" not in match_df.columns:
+                    st.error("매칭파일의 '정상매칭' 시트 컬럼명이 예상과 달라요. (택배송장(E), 세관신고송장(F))")
+                    st.stop()
+
+                required_dc_cols = ["HBL NO", "BOX 수량", "중량"]
+                missing_dc_cols = [c for c in required_dc_cols if c not in hak_df.columns]
+                if missing_dc_cols:
+                    st.error(
+                        "동춘경동 신규파일 양식이 아니에요. "
+                        f"필요 컬럼: {', '.join(required_dc_cols)} / 없는 컬럼: {', '.join(missing_dc_cols)}\n\n"
+                        "업로드한 파일이 학익경동 양식이면 위의 '③ 학익경동 자동변환' 탭에서 처리해주세요."
+                    )
+                    st.stop()
+
+                map_group = match_df.groupby("세관신고송장(F)")["택배송장(E)"].apply(list).to_dict()
+                rows = []
+
+                for _, r in hak_df.iterrows():
+                    hbl = kd_norm_str(r.get("HBL NO"))
+                    e_list = map_group.get(hbl)
+
+                    box = kd_to_float(r.get("BOX 수량"))
+                    wt = kd_to_float(r.get("중량"))
+
+                    denom = box if (box and box > 0) else (len(e_list) if e_list else None)
+                    per = (wt / denom) if (wt is not None and denom) else wt
+
+                    def base_row(rr):
+                        rr = rr.copy()
+                        if "BOX 수량" in rr.index:
+                            rr.loc["BOX 수량"] = "1"
+                        if per is not None and "중량" in rr.index:
+                            rr.loc["중량"] = str(round(per, 3))
+                        return rr
+
+                    if e_list:
+                        for e in e_list:
+                            rr = base_row(r)
+                            rr["HBL NO"] = kd_norm_str(e)
+                            rows.append(rr)
+                    else:
+                        rr = base_row(r)
+                        rows.append(rr)
+
+                out = pd.DataFrame(rows)
+                if set(hak_df.columns).issubset(set(out.columns)):
+                    out = out[hak_df.columns]
+
+                out = kd_replace_delivery_terms(out)
 
                 bio = io.BytesIO()
                 with pd.ExcelWriter(bio, engine="openpyxl") as w:
-                    out1.to_excel(w, index=False, sheet_name="정상매칭")
-                    out2.to_excel(w, index=False, sheet_name="조회안되는송장")
+                    out.to_excel(w, index=False, sheet_name="변환결과")
                 bio.seek(0)
 
+                st.success(f"변환 완료: {len(out):,}행")
+                st.dataframe(out.head(50), use_container_width=True)
+
                 st.download_button(
-                    "⬇️ 엑셀 다운로드 (정상매칭/조회안되는송장)",
+                    "⬇️ 동춘경동 변환파일 다운로드",
                     bio.getvalue(),
-                    file_name="멀티건_E-F_매칭_조회불가포함.xlsx",
+                    file_name="동춘경동_택배송장변환.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True,
-                    key="kd_match_download",
+                    key="kd_dc_download",
                 )
 
-    # ---------------- TAB 2 ----------------
-    with tab2:
-        st.subheader("동춘경동 자동변환 (멀티건 분할 + 중량/BOX 처리 + A열 숫자)")
-        st.write("**멀티건 매칭파일(정상매칭 시트)** + **동춘경동 신규파일**을 업로드하세요.")
+        # ---------------- TAB 3 ----------------
+        with tab3:
+            st.subheader("학익경동 자동변환 (멀티건 분할 + C/T·W/T 처리)")
+            st.write("**멀티건 매칭파일(정상매칭 시트)** + **학익경동 신규파일**을 업로드하세요.")
+            st.caption("학익경동 양식 기준: HBL NO(또는 송장번호) / C/T / W/T 컬럼을 사용합니다.")
 
-        match_file = st.file_uploader(
-            "멀티건 매칭파일(.xlsx) — 정상매칭 시트 포함",
-            type=["xlsx"],
-            key="kd_dc_match",
-        )
+            hakik_match_file = st.file_uploader(
+                "멀티건 매칭파일(.xlsx) — 정상매칭 시트 포함",
+                type=["xlsx"],
+                key="kd_hakik_match",
+            )
 
-        hak_file = st.file_uploader(
-            "동춘경동 신규파일(.xlsx)",
-            type=["xlsx"],
-            key="kd_dc_file",
-        )
+            hakik_file = st.file_uploader(
+                "학익경동 신규파일(.xlsx)",
+                type=["xlsx"],
+                key="kd_hakik_file",
+            )
 
-        if match_file and hak_file:
-            match_df = pd.read_excel(match_file, sheet_name="정상매칭", dtype=str)
-            hak_df = pd.read_excel(hak_file, dtype=str)
+            if hakik_match_file and hakik_file:
+                match_df = pd.read_excel(hakik_match_file, sheet_name="정상매칭", dtype=str)
+                hakik_df = pd.read_excel(hakik_file, dtype=str)
 
-            if "세관신고송장(F)" not in match_df.columns or "택배송장(E)" not in match_df.columns:
-                st.error("매칭파일의 '정상매칭' 시트 컬럼명이 예상과 달라요. (택배송장(E), 세관신고송장(F))")
-                st.stop()
+                required_match_cols = ["세관신고송장(F)", "택배송장(E)"]
+                missing_match_cols = [c for c in required_match_cols if c not in match_df.columns]
 
-            required_dc_cols = ["HBL NO", "BOX 수량", "중량"]
-            missing_dc_cols = [c for c in required_dc_cols if c not in hak_df.columns]
-            if missing_dc_cols:
-                st.error(
-                    "동춘경동 신규파일 양식이 아니에요. "
-                    f"필요 컬럼: {', '.join(required_dc_cols)} / 없는 컬럼: {', '.join(missing_dc_cols)}\n\n"
-                    "업로드한 파일이 학익경동 양식이면 위의 '③ 학익경동 자동변환' 탭에서 처리해주세요."
+                if missing_match_cols:
+                    st.error("매칭파일의 '정상매칭' 시트 컬럼명이 예상과 달라요. (택배송장(E), 세관신고송장(F))")
+                    st.stop()
+
+                if "HBL NO" in hakik_df.columns:
+                    waybill_col = "HBL NO"
+                elif "송장번호" in hakik_df.columns:
+                    waybill_col = "송장번호"
+                else:
+                    st.error("학익경동 신규파일에 필요한 컬럼이 없어요: HBL NO 또는 송장번호")
+                    st.stop()
+
+                required_hakik_cols = [waybill_col, "C/T", "W/T"]
+                missing_hakik_cols = [c for c in required_hakik_cols if c not in hakik_df.columns]
+
+                if missing_hakik_cols:
+                    st.error(f"학익경동 신규파일에 필요한 컬럼이 없어요: {', '.join(missing_hakik_cols)}")
+                    st.stop()
+
+                match_df["세관신고송장(F)"] = match_df["세관신고송장(F)"].apply(kd_norm_str)
+                match_df["택배송장(E)"] = match_df["택배송장(E)"].apply(kd_norm_str)
+
+                map_group = (
+                    match_df[match_df["세관신고송장(F)"] != ""]
+                    .groupby("세관신고송장(F)")["택배송장(E)"]
+                    .apply(list)
+                    .to_dict()
                 )
-                st.stop()
 
-            map_group = match_df.groupby("세관신고송장(F)")["택배송장(E)"].apply(list).to_dict()
-            rows = []
+                rows = []
+                unmatched_rows = []
 
-            for _, r in hak_df.iterrows():
-                hbl = kd_norm_str(r.get("HBL NO"))
-                e_list = map_group.get(hbl)
+                for _, r in hakik_df.iterrows():
+                    waybill = kd_norm_str(r.get(waybill_col))
+                    e_list = map_group.get(waybill)
 
-                box = kd_to_float(r.get("BOX 수량"))
-                wt = kd_to_float(r.get("중량"))
+                    ct = kd_to_float(r.get("C/T"))
+                    wt = kd_to_float(r.get("W/T"))
 
-                denom = box if (box and box > 0) else (len(e_list) if e_list else None)
-                per = (wt / denom) if (wt is not None and denom) else wt
+                    if e_list:
+                        repeat_count = len(e_list)
+                    elif ct and ct > 0:
+                        repeat_count = int(ct)
+                    else:
+                        repeat_count = 1
 
-                def base_row(rr):
-                    rr = rr.copy()
-                    if "BOX 수량" in rr.index:
-                        rr.loc["BOX 수량"] = "1"
-                    if per is not None and "중량" in rr.index:
-                        rr.loc["중량"] = str(round(per, 3))
-                    return rr
+                    weight_divisor = ct if (ct and ct > 0) else repeat_count
+                    per_wt = (wt / weight_divisor) if (wt is not None and weight_divisor) else wt
 
-                if e_list:
-                    for e in e_list:
-                        rr = base_row(r)
-                        rr["HBL NO"] = kd_norm_str(e)
-                        rows.append(rr)
-                else:
-                    rr = base_row(r)
-                    rows.append(rr)
+                    def make_row(rr):
+                        rr = rr.copy()
+                        if "C/T" in rr.index:
+                            rr.loc["C/T"] = "1"
+                        if per_wt is not None and "W/T" in rr.index:
+                            rr.loc["W/T"] = str(round(per_wt, 3))
+                        return rr
 
-            out = pd.DataFrame(rows)
-            if set(hak_df.columns).issubset(set(out.columns)):
-                out = out[hak_df.columns]
+                    if e_list:
+                        for e in e_list:
+                            rr = make_row(r)
+                            rr[waybill_col] = kd_norm_str(e)
+                            rows.append(rr)
+                    else:
+                        for _ in range(repeat_count):
+                            rr = make_row(r)
+                            rows.append(rr)
 
-            out = kd_replace_delivery_terms(out)
+                        if ct and ct > 1:
+                            unmatched_rows.append({
+                                waybill_col: waybill,
+                                "C/T": ct,
+                                "W/T": wt,
+                                "비고": "매칭 송장 없이 C/T 기준으로 자동 분할됨",
+                            })
 
-            bio = io.BytesIO()
-            with pd.ExcelWriter(bio, engine="openpyxl") as w:
-                out.to_excel(w, index=False, sheet_name="변환결과")
-            bio.seek(0)
+                out = pd.DataFrame(rows)
+                if set(hakik_df.columns).issubset(set(out.columns)):
+                    out = out[hakik_df.columns]
 
-            st.success(f"변환 완료: {len(out):,}행")
-            st.dataframe(out.head(50), use_container_width=True)
+                out = kd_replace_delivery_terms(out)
 
-            st.download_button(
-                "⬇️ 동춘경동 변환파일 다운로드",
-                bio.getvalue(),
-                file_name="동춘경동_택배송장변환.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="kd_dc_download",
-            )
+                bio = io.BytesIO()
+                with pd.ExcelWriter(bio, engine="openpyxl") as w:
+                    out.to_excel(w, index=False, sheet_name="변환결과")
+                    if unmatched_rows:
+                        pd.DataFrame(unmatched_rows).to_excel(w, index=False, sheet_name="확인필요")
+                bio.seek(0)
 
-    # ---------------- TAB 3 ----------------
-    with tab3:
-        st.subheader("학익경동 자동변환 (멀티건 분할 + C/T·W/T 처리)")
-        st.write("**멀티건 매칭파일(정상매칭 시트)** + **학익경동 신규파일**을 업로드하세요.")
-        st.caption("학익경동 양식 기준: HBL NO(또는 송장번호) / C/T / W/T 컬럼을 사용합니다.")
+                st.success(f"변환 완료: {len(out):,}행")
 
-        hakik_match_file = st.file_uploader(
-            "멀티건 매칭파일(.xlsx) — 정상매칭 시트 포함",
-            type=["xlsx"],
-            key="kd_hakik_match",
-        )
-
-        hakik_file = st.file_uploader(
-            "학익경동 신규파일(.xlsx)",
-            type=["xlsx"],
-            key="kd_hakik_file",
-        )
-
-        if hakik_match_file and hakik_file:
-            match_df = pd.read_excel(hakik_match_file, sheet_name="정상매칭", dtype=str)
-            hakik_df = pd.read_excel(hakik_file, dtype=str)
-
-            required_match_cols = ["세관신고송장(F)", "택배송장(E)"]
-            missing_match_cols = [c for c in required_match_cols if c not in match_df.columns]
-
-            if missing_match_cols:
-                st.error("매칭파일의 '정상매칭' 시트 컬럼명이 예상과 달라요. (택배송장(E), 세관신고송장(F))")
-                st.stop()
-
-            if "HBL NO" in hakik_df.columns:
-                waybill_col = "HBL NO"
-            elif "송장번호" in hakik_df.columns:
-                waybill_col = "송장번호"
-            else:
-                st.error("학익경동 신규파일에 필요한 컬럼이 없어요: HBL NO 또는 송장번호")
-                st.stop()
-
-            required_hakik_cols = [waybill_col, "C/T", "W/T"]
-            missing_hakik_cols = [c for c in required_hakik_cols if c not in hakik_df.columns]
-
-            if missing_hakik_cols:
-                st.error(f"학익경동 신규파일에 필요한 컬럼이 없어요: {', '.join(missing_hakik_cols)}")
-                st.stop()
-
-            match_df["세관신고송장(F)"] = match_df["세관신고송장(F)"].apply(kd_norm_str)
-            match_df["택배송장(E)"] = match_df["택배송장(E)"].apply(kd_norm_str)
-
-            map_group = (
-                match_df[match_df["세관신고송장(F)"] != ""]
-                .groupby("세관신고송장(F)")["택배송장(E)"]
-                .apply(list)
-                .to_dict()
-            )
-
-            rows = []
-            unmatched_rows = []
-
-            for _, r in hakik_df.iterrows():
-                waybill = kd_norm_str(r.get(waybill_col))
-                e_list = map_group.get(waybill)
-
-                ct = kd_to_float(r.get("C/T"))
-                wt = kd_to_float(r.get("W/T"))
-
-                if e_list:
-                    repeat_count = len(e_list)
-                elif ct and ct > 0:
-                    repeat_count = int(ct)
-                else:
-                    repeat_count = 1
-
-                weight_divisor = ct if (ct and ct > 0) else repeat_count
-                per_wt = (wt / weight_divisor) if (wt is not None and weight_divisor) else wt
-
-                def make_row(rr):
-                    rr = rr.copy()
-                    if "C/T" in rr.index:
-                        rr.loc["C/T"] = "1"
-                    if per_wt is not None and "W/T" in rr.index:
-                        rr.loc["W/T"] = str(round(per_wt, 3))
-                    return rr
-
-                if e_list:
-                    for e in e_list:
-                        rr = make_row(r)
-                        rr[waybill_col] = kd_norm_str(e)
-                        rows.append(rr)
-                else:
-                    for _ in range(repeat_count):
-                        rr = make_row(r)
-                        rows.append(rr)
-
-                    if ct and ct > 1:
-                        unmatched_rows.append({
-                            waybill_col: waybill,
-                            "C/T": ct,
-                            "W/T": wt,
-                            "비고": "매칭 송장 없이 C/T 기준으로 자동 분할됨",
-                        })
-
-            out = pd.DataFrame(rows)
-            if set(hakik_df.columns).issubset(set(out.columns)):
-                out = out[hakik_df.columns]
-
-            out = kd_replace_delivery_terms(out)
-
-            bio = io.BytesIO()
-            with pd.ExcelWriter(bio, engine="openpyxl") as w:
-                out.to_excel(w, index=False, sheet_name="변환결과")
                 if unmatched_rows:
-                    pd.DataFrame(unmatched_rows).to_excel(w, index=False, sheet_name="확인필요")
-            bio.seek(0)
+                    st.warning(f"확인필요 {len(unmatched_rows):,}건이 있습니다. 다운로드 파일의 '확인필요' 시트를 확인해주세요.")
 
-            st.success(f"변환 완료: {len(out):,}행")
+                st.dataframe(out.head(50), use_container_width=True)
 
-            if unmatched_rows:
-                st.warning(f"확인필요 {len(unmatched_rows):,}건이 있습니다. 다운로드 파일의 '확인필요' 시트를 확인해주세요.")
+                st.download_button(
+                    "⬇️ 학익경동 변환파일 다운로드",
+                    bio.getvalue(),
+                    file_name="학익경동_택배송장변환.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True,
+                    key="kd_hakik_download",
+                )
 
-            st.dataframe(out.head(50), use_container_width=True)
 
-            st.download_button(
-                "⬇️ 학익경동 변환파일 다운로드",
-                bio.getvalue(),
-                file_name="학익경동_택배송장변환.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="kd_hakik_download",
-            )
+    # 공통 CSS
+    st.markdown("""
+    <style>
+    .stat-card { background: white; border-radius: 12px; padding: 20px 18px; border: 1px solid #e8e4de; text-align: center; height: 100%; }
+    .stat-card .label { font-size: 12px; color: #8a6a4a; letter-spacing: 1px; margin-bottom: 8px; font-weight: 600; }
+    .stat-card .value { font-size: 36px; font-weight: 900; color: #2c1a0e; line-height: 1; margin-bottom: 6px; }
+    .stat-card .sub { font-size: 11px; color: #b8913a; }
+    .stat-card.gold { background: linear-gradient(135deg, #fff8e8 0%, #ffe8a8 100%); }
+    .stat-card.gold .value { color: #8a5a10; }
+    .stat-card.green { background: linear-gradient(135deg, #e8f5e8 0%, #c8e8c8 100%); }
+    .stat-card.green .value { color: #2d6a2d; }
+    .stat-card.orange { background: linear-gradient(135deg, #fff0e0 0%, #ffd8a8 100%); }
+    .stat-card.orange .value { color: #b8550a; }
+    .stat-card.blue { background: linear-gradient(135deg, #e8f0ff 0%, #c8d8f0 100%); }
+    .stat-card.blue .value { color: #1b3a7b; }
+    </style>
+    """, unsafe_allow_html=True)
 
-    # ── 탭4: 발송 통계 대시보드 ─────────────────────────────────────────────────
-    with tab4:
+    with main_tab2:
         st.markdown("""
         <style>
-        .stat-hero { background: linear-gradient(135deg, #2c1a0e 0%, #4a2e1a 100%); border-radius: 14px; padding: 24px 28px; margin-bottom: 20px; color: white; }
-        .stat-hero-title { font-size: 22px; font-weight: 900; color: #f3dfad; letter-spacing: 1px; margin-bottom: 4px; }
-        .stat-hero-date { font-size: 13px; color: #c8a878; letter-spacing: 2px; }
-        .stat-card { background: white; border-radius: 12px; padding: 20px 18px; border: 1px solid #e8e4de; text-align: center; height: 100%; }
-        .stat-card .label { font-size: 12px; color: #8a6a4a; letter-spacing: 1px; margin-bottom: 8px; font-weight: 600; }
-        .stat-card .value { font-size: 36px; font-weight: 900; color: #2c1a0e; line-height: 1; margin-bottom: 6px; }
-        .stat-card .sub { font-size: 11px; color: #b8913a; }
-        .stat-card.gold { background: linear-gradient(135deg, #fff8e8 0%, #ffe8a8 100%); }
-        .stat-card.gold .value { color: #8a5a10; }
-        .stat-card.green { background: linear-gradient(135deg, #e8f5e8 0%, #c8e8c8 100%); }
-        .stat-card.green .value { color: #2d6a2d; }
-        .stat-card.orange { background: linear-gradient(135deg, #fff0e0 0%, #ffd8a8 100%); }
-        .stat-card.orange .value { color: #b8550a; }
-        .stat-card.blue { background: linear-gradient(135deg, #e8f0ff 0%, #c8d8f0 100%); }
-        .stat-card.blue .value { color: #1b3a7b; }
+        .stat-hero-ty { background: linear-gradient(135deg, #2c1a0e 0%, #4a2e1a 100%); border-radius: 14px; padding: 24px 28px; margin-bottom: 20px; color: white; }
+        .stat-hero-ty .stat-hero-title { font-size: 22px; font-weight: 900; color: #f3dfad; letter-spacing: 1px; margin-bottom: 4px; }
+        .stat-hero-ty .stat-hero-date { font-size: 13px; color: #c8a878; letter-spacing: 2px; }
         </style>
         """, unsafe_allow_html=True)
 
-        # 한국 시간
         from datetime import timezone, timedelta
-        KST = timezone(timedelta(hours=9))
-        today_kst = datetime.now(tz=KST).date()
-        today_label = f"{today_kst.year}년 {today_kst.month:02d}월 {today_kst.day:02d}일"
+        KST_TY = timezone(timedelta(hours=9))
+        today_kst_ty = datetime.now(tz=KST_TY).date()
+        today_label_ty = f"{today_kst_ty.year}년 {today_kst_ty.month:02d}월 {today_kst_ty.day:02d}일"
 
         st.markdown(f"""
-        <div class="stat-hero">
-            <div class="stat-hero-title">📊 경동 발송 대시보드</div>
-            <div class="stat-hero-date">{today_label}</div>
+        <div class="stat-hero-ty">
+            <div class="stat-hero-title">📊 TY 티와이 경동 발송 대시보드</div>
+            <div class="stat-hero-date">{today_label_ty}</div>
         </div>
         """, unsafe_allow_html=True)
 
         # 관리자 스캔 누적 업로드
         if is_admin():
-            with st.expander("🔧 관리자 — 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
-                up_scan = st.file_uploader(
-                    "스캔 파일 (날짜-차수 컬럼 형태)",
-                    type=["xlsx", "xls"], key="dash_up_scan"
+            with st.expander(f"🔧 관리자 — TY 티와이 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
+                up_scan_ty = st.file_uploader(
+                    f"TY 티와이 스캔 파일 (날짜-차수 컬럼 형태)",
+                    type=["xlsx", "xls"], key="dash_up_scan_ty"
                 )
-                if up_scan:
+                if up_scan_ty:
                     try:
-                        img_bytes = up_scan.read()
+                        img_bytes_ty = up_scan_ty.read()
                         with st.spinner("GitHub에 업로드 중..."):
-                            ok = github_upload_image(img_bytes, "scan_cumulative.xlsx")
-                        if ok:
-                            st.success("✅ 스캔 파일 누적 저장 완료!")
+                            ok_ty = github_upload_image(img_bytes_ty, "ty_scan_cumulative.xlsx")
+                        if ok_ty:
+                            st.success(f"✅ TY 티와이 스캔 파일 누적 저장 완료!")
                         else:
                             st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
-                        st.session_state["_scan_data"] = img_bytes
+                        st.session_state["_scan_data_ty"] = img_bytes_ty
                     except Exception as e:
                         st.error(f"오류: {e}")
 
-        # 스캔 데이터 로드 (GitHub 또는 세션)
-        scan_data = st.session_state.get("_scan_data")
-        if not scan_data:
-            scan_data = github_load_image("scan_cumulative.xlsx")
-            if scan_data:
-                st.session_state["_scan_data"] = scan_data
+        scan_data_ty = st.session_state.get("_scan_data_ty")
+        if not scan_data_ty:
+            scan_data_ty = github_load_image("ty_scan_cumulative.xlsx")
+            if scan_data_ty:
+                st.session_state["_scan_data_ty"] = scan_data_ty
 
-        if not scan_data:
-            st.warning("📋 먼저 관리자 메뉴에서 스캔 파일을 업로드해 주세요.")
-            st.stop()
-
-        # 발송 파일 업로드
-        send_file = st.file_uploader(
-            "📨 오늘의 경동 발송리스트 파일 업로드",
-            type=["xlsx", "xls"], key="dash_send"
-        )
-
-        if not send_file:
-            st.info("👆 위에서 발송 파일을 업로드하면 대시보드가 자동으로 생성됩니다.")
-            st.stop()
-
-        try:
-            import re as _re
-            import io as _io
-
-            df_sc = pd.read_excel(_io.BytesIO(scan_data))
-            xl_send = pd.ExcelFile(send_file)
-            sheet_sel = xl_send.sheet_names[0]
-            if len(xl_send.sheet_names) > 1:
-                sheet_sel = st.selectbox("발송리스트 시트", xl_send.sheet_names, key="dash_sheet")
-            df_sd = pd.read_excel(send_file, sheet_name=sheet_sel)
-
-            # 발송리스트 전처리
-            date_col = next((c for c in df_sd.columns if "발송" in str(c) and ("일" in str(c) or "접수" in str(c) or "구분" in str(c))), None)
-            order_col = next((c for c in df_sd.columns if "주문번호" in str(c) or "고객사" in str(c)), None)
-
-            if not date_col or not order_col:
-                st.error(f"발송리스트에서 날짜/주문번호 컬럼을 못 찾았어요. 컬럼: {list(df_sd.columns)}")
-                st.stop()
-
-            df_sd['_발송일'] = pd.to_datetime(df_sd[date_col], errors='coerce').dt.date
-            df_sd['_주문번호'] = df_sd[order_col].astype(str).str.strip().str.replace(r'\.0$','',regex=True)
-
-            send_by_date = {}
-            for _, row in df_sd.iterrows():
-                d = row['_발송일']
-                if pd.isna(d): continue
-                key = f"{d.month:02d}{d.day:02d}"
-                send_by_date.setdefault(key, set()).add(row['_주문번호'])
-            all_send = set(df_sd['_주문번호'])
-
-            # 스캔건 날짜별
-            scan_dict = {}
-            for col in df_sc.columns:
-                m = _re.match(r'^(\d{4})', str(col))
-                if m:
-                    dk = m.group(1)
-                    for v in df_sc[col].dropna():
-                        try: scan_dict.setdefault(dk, set()).add(str(int(float(v))))
-                        except: pass
-
-            sorted_dates = sorted(scan_dict.keys())
-            today_key = f"{today_kst.month:02d}{today_kst.day:02d}"
-
-            # 최신 발송일 기준 (오늘 발송 없으면 가장 최근 발송일)
-            latest_send_date = None
-            if send_by_date:
-                send_dates_sorted = sorted(send_by_date.keys())
-                latest_send_date = send_dates_sorted[-1]
-
-            focus_date = today_key if today_key in send_by_date else (latest_send_date or today_key)
-            focus_label = f"{int(focus_date[:2])}월 {int(focus_date[2:]):02d}일"
-
-            # 오늘(또는 최근 발송일) 통계
-            today_scan_set = scan_dict.get(focus_date, set())
-            today_sent_set = send_by_date.get(focus_date, set())
-
-            cumulative_before = set()
-            for dk in sorted_dates:
-                if dk < focus_date:
-                    cumulative_before.update(scan_dict[dk])
-
-            today_scan      = len(today_scan_set)
-            today_sent      = len(today_sent_set)
-            same_day_sent   = len(today_scan_set & today_sent_set)
-            prev_sent       = len(cumulative_before & today_sent_set)
-            total_stock     = len((cumulative_before | today_scan_set) - all_send)
-            process_rate    = (same_day_sent / today_scan * 100) if today_scan else 0.0
-
-            # ── HERO 카드 4개 ──
-            st.markdown(f"### 📅 {focus_label} 현황")
-            r1 = st.columns(4)
-            with r1[0]:
-                st.markdown(f"""<div class="stat-card blue">
-                    <div class="label">오늘 스캔</div>
-                    <div class="value">{today_scan:,}</div>
-                    <div class="sub">건</div></div>""", unsafe_allow_html=True)
-            with r1[1]:
-                st.markdown(f"""<div class="stat-card green">
-                    <div class="label">오늘 발송</div>
-                    <div class="value">{today_sent:,}</div>
-                    <div class="sub">건 (당일 {same_day_sent} + 이전 {prev_sent})</div></div>""", unsafe_allow_html=True)
-            with r1[2]:
-                st.markdown(f"""<div class="stat-card orange">
-                    <div class="label">남은 재고</div>
-                    <div class="value">{total_stock:,}</div>
-                    <div class="sub">미발송 건</div></div>""", unsafe_allow_html=True)
-            with r1[3]:
-                st.markdown(f"""<div class="stat-card gold">
-                    <div class="label">당일 처리율</div>
-                    <div class="value">{process_rate:.1f}%</div>
-                    <div class="sub">당일 스캔 → 당일 발송</div></div>""", unsafe_allow_html=True)
-
-            st.markdown("---")
-
-            # ── 최근 7일 추이 차트 ──
-            st.markdown("### 📈 최근 7일 추이")
-            recent_dates = sorted_dates[-7:] if len(sorted_dates) >= 7 else sorted_dates
-            if recent_dates:
-                chart_rows = []
-                cum_chk = set()
-                for dk in sorted_dates:
-                    if dk < (recent_dates[0] if recent_dates else "0000"):
-                        cum_chk.update(scan_dict[dk])
-                for dk in recent_dates:
-                    sc = scan_dict[dk]
-                    sd = send_by_date.get(dk, set())
-                    cum_chk.update(sc)
-                    chart_rows.append({
-                        "날짜": f"{int(dk[:2])}/{int(dk[2:]):02d}",
-                        "스캔건": len(sc),
-                        "당일발송": len(sc & sd),
-                    })
-                chart_df = pd.DataFrame(chart_rows).set_index("날짜")
-                st.bar_chart(chart_df, height=280, color=["#b8913a", "#2d6a2d"])
-
-            st.markdown("---")
-
-            # ── 날짜별 표 ──
-            st.markdown("### 📋 날짜별 통계")
-            cumulative = set()
-            rows_stat = []
-            for dk in sorted_dates:
-                today_scan_x = scan_dict[dk]
-                cumulative.update(today_scan_x)
-                today_sent_x = send_by_date.get(dk, set())
-                rows_stat.append({
-                    "날짜": f"{int(dk[:2])}월 {int(dk[2:]):02d}일",
-                    "당일스캔": len(today_scan_x),
-                    "당일발송": len(today_scan_x & today_sent_x),
-                    "이전스캔발송": len((cumulative - today_scan_x) & today_sent_x),
-                    "재고": len(today_scan_x - today_sent_x),
-                    "총재고": len(cumulative - all_send),
-                })
-            result_df = pd.DataFrame(rows_stat)
-            st.dataframe(
-                result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
-                use_container_width=True, height=400,
+        if not scan_data_ty:
+            st.warning(f"📋 먼저 관리자 메뉴에서 TY 티와이 스캔 파일을 업로드해 주세요.")
+        else:
+            send_file_ty = st.file_uploader(
+                f"📨 오늘의 TY 티와이 경동 발송리스트 파일 업로드",
+                type=["xlsx", "xls"], key="dash_send_ty"
             )
 
-            # ── 미발송 목록 ──
-            st.markdown("---")
-            with st.expander(f"📋 전체 미발송 목록 보기 ({total_stock:,}건)", expanded=False):
-                period_scanned = set()
-                for dk in sorted_dates:
-                    period_scanned.update(scan_dict[dk])
-                unsent = period_scanned - all_send
-                if unsent:
-                    scan_date_map = {}
-                    for dk in sorted_dates:
-                        for wn in scan_dict[dk]:
-                            if wn not in scan_date_map:
-                                scan_date_map[wn] = dk
-                    unsent_rows = [{
-                        "스캔일자": f"{int(scan_date_map.get(wn,'0000')[:2])}월 {int(scan_date_map.get(wn,'0000')[2:]):02d}일" if scan_date_map.get(wn) else "",
-                        "운송장번호(고객사주문번호)": wn,
-                    } for wn in sorted(unsent)]
-                    unsent_df = pd.DataFrame(unsent_rows)
-                    st.dataframe(unsent_df, use_container_width=True, height=350)
-                else:
-                    st.success("🎉 모든 스캔건이 발송 완료됐어요!")
+            if not send_file_ty:
+                st.info("👆 위에서 발송 파일을 업로드하면 대시보드가 자동으로 생성됩니다.")
+            else:
+                try:
+                    import re as _re
+                    import io as _io
 
-            # ── 엑셀 다운로드 ──
-            from openpyxl import Workbook as _WB
-            from openpyxl.styles import PatternFill as _PF, Font as _Ft, Alignment as _Al, Border as _Bd, Side as _Sd
-            buf = _io.BytesIO()
-            wb2 = _WB(); ws2 = wb2.active; ws2.title = "발송통계"
-            headers = list(result_df.columns)
-            hdr_fill = _PF("solid", fgColor="2C1A0E")
-            hdr_font = _Ft(bold=True, color="F3DFAD", size=11)
-            thin = _Bd(left=_Sd(style='thin', color='CCCCCC'), right=_Sd(style='thin', color='CCCCCC'),
-                       top=_Sd(style='thin', color='CCCCCC'), bottom=_Sd(style='thin', color='CCCCCC'))
-            for ci, h in enumerate(headers, 1):
-                c = ws2.cell(row=1, column=ci, value=h); c.fill = hdr_fill; c.font = hdr_font
-                c.alignment = _Al(horizontal='center'); c.border = thin
-            for ri, rd in enumerate(result_df.itertuples(index=False), 2):
-                for ci, val in enumerate(rd, 1):
-                    c = ws2.cell(row=ri, column=ci, value=val)
-                    c.alignment = _Al(horizontal='center'); c.border = thin
-            ws2.column_dimensions['A'].width = 14
-            for ci in range(2, len(headers)+1):
-                ws2.column_dimensions[chr(64+ci)].width = 14
-            wb2.save(buf)
-            st.download_button(
-                "⬇️ 통계 엑셀 다운로드",
-                buf.getvalue(),
-                file_name=f"경동발송통계_{today_kst.strftime('%Y%m%d')}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True,
-                key="dash_xl_download",
+                    df_sc_ty = pd.read_excel(_io.BytesIO(scan_data_ty))
+                    xl_send_ty = pd.ExcelFile(send_file_ty)
+                    sheet_sel_ty = xl_send_ty.sheet_names[0]
+                    if len(xl_send_ty.sheet_names) > 1:
+                        sheet_sel_ty = st.selectbox("발송리스트 시트", xl_send_ty.sheet_names, key="dash_sheet_ty")
+                    df_sd_ty = pd.read_excel(send_file_ty, sheet_name=sheet_sel_ty)
+
+                    date_col_ty = next((c for c in df_sd_ty.columns if "발송" in str(c) and ("일" in str(c) or "접수" in str(c) or "구분" in str(c))), None)
+                    order_col_ty = next((c for c in df_sd_ty.columns if "주문번호" in str(c) or "고객사" in str(c)), None)
+
+                    if not date_col_ty or not order_col_ty:
+                        st.error(f"발송리스트에서 날짜/주문번호 컬럼을 못 찾았어요. 컬럼: {list(df_sd_ty.columns)}")
+                    else:
+                        df_sd_ty['_발송일'] = pd.to_datetime(df_sd_ty[date_col_ty], errors='coerce').dt.date
+                        df_sd_ty['_주문번호'] = df_sd_ty[order_col_ty].astype(str).str.strip().str.replace(r'\\.0$','',regex=True)
+
+                        send_by_date_ty = {}
+                        for _, row in df_sd_ty.iterrows():
+                            d = row['_발송일']
+                            if pd.isna(d): continue
+                            key = f"{d.month:02d}{d.day:02d}"
+                            send_by_date_ty.setdefault(key, set()).add(row['_주문번호'])
+                        all_send_ty = set(df_sd_ty['_주문번호'])
+
+                        scan_dict_ty = {}
+                        for col in df_sc_ty.columns:
+                            m = _re.match(r'^(\\d{4})', str(col))
+                            if m:
+                                dk = m.group(1)
+                                for v in df_sc_ty[col].dropna():
+                                    try: scan_dict_ty.setdefault(dk, set()).add(str(int(float(v))))
+                                    except: pass
+
+                        sorted_dates_ty = sorted(scan_dict_ty.keys())
+                        today_key_ty = f"{today_kst_ty.month:02d}{today_kst_ty.day:02d}"
+
+                        latest_send_ty = None
+                        if send_by_date_ty:
+                            latest_send_ty = sorted(send_by_date_ty.keys())[-1]
+
+                        focus_date_ty = today_key_ty if today_key_ty in send_by_date_ty else (latest_send_ty or today_key_ty)
+                        focus_label_ty = f"{int(focus_date_ty[:2])}월 {int(focus_date_ty[2:]):02d}일"
+
+                        today_scan_set_ty = scan_dict_ty.get(focus_date_ty, set())
+                        today_sent_set_ty = send_by_date_ty.get(focus_date_ty, set())
+
+                        cumulative_before_ty = set()
+                        for dk in sorted_dates_ty:
+                            if dk < focus_date_ty:
+                                cumulative_before_ty.update(scan_dict_ty[dk])
+
+                        today_scan_n = len(today_scan_set_ty)
+                        today_sent_n = len(today_sent_set_ty)
+                        same_day_n = len(today_scan_set_ty & today_sent_set_ty)
+                        prev_n = len(cumulative_before_ty & today_sent_set_ty)
+                        total_stock_n = len((cumulative_before_ty | today_scan_set_ty) - all_send_ty)
+                        process_rate_n = (same_day_n / today_scan_n * 100) if today_scan_n else 0.0
+
+                        st.markdown(f"### 📅 {focus_label_ty} 현황")
+                        rcols = st.columns(4)
+                        with rcols[0]:
+                            st.markdown(f'<div class="stat-card blue"><div class="label">오늘 스캔</div><div class="value">{today_scan_n:,}</div><div class="sub">건</div></div>', unsafe_allow_html=True)
+                        with rcols[1]:
+                            st.markdown(f'<div class="stat-card green"><div class="label">오늘 발송</div><div class="value">{today_sent_n:,}</div><div class="sub">건 (당일 {same_day_n} + 이전 {prev_n})</div></div>', unsafe_allow_html=True)
+                        with rcols[2]:
+                            st.markdown(f'<div class="stat-card orange"><div class="label">남은 재고</div><div class="value">{total_stock_n:,}</div><div class="sub">미발송 건</div></div>', unsafe_allow_html=True)
+                        with rcols[3]:
+                            st.markdown(f'<div class="stat-card gold"><div class="label">당일 처리율</div><div class="value">{process_rate_n:.1f}%</div><div class="sub">당일 스캔→당일 발송</div></div>', unsafe_allow_html=True)
+
+                        st.markdown("---")
+                        st.markdown("### 📈 최근 7일 추이")
+                        recent_dates_x = sorted_dates_ty[-7:] if len(sorted_dates_ty) >= 7 else sorted_dates_ty
+                        if recent_dates_x:
+                            chart_rows = []
+                            for dk in recent_dates_x:
+                                sc = scan_dict_ty[dk]
+                                sd = send_by_date_ty.get(dk, set())
+                                chart_rows.append({
+                                    "날짜": f"{int(dk[:2])}/{int(dk[2:]):02d}",
+                                    "스캔건": len(sc),
+                                    "당일발송": len(sc & sd),
+                                })
+                            chart_df = pd.DataFrame(chart_rows).set_index("날짜")
+                            st.bar_chart(chart_df, height=280, color=["#b8913a", "#2d6a2d"])
+
+                        st.markdown("---")
+                        st.markdown("### 📋 날짜별 통계")
+                        cumulative_x = set()
+                        rows_stat = []
+                        for dk in sorted_dates_ty:
+                            ts = scan_dict_ty[dk]
+                            cumulative_x.update(ts)
+                            sd = send_by_date_ty.get(dk, set())
+                            rows_stat.append({
+                                "날짜": f"{int(dk[:2])}월 {int(dk[2:]):02d}일",
+                                "당일스캔": len(ts),
+                                "당일발송": len(ts & sd),
+                                "이전스캔발송": len((cumulative_x - ts) & sd),
+                                "재고": len(ts - sd),
+                                "총재고": len(cumulative_x - all_send_ty),
+                            })
+                        result_df = pd.DataFrame(rows_stat)
+                        st.dataframe(
+                            result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
+                            use_container_width=True, height=400,
+                        )
+
+                        st.markdown("---")
+                        with st.expander(f"📋 전체 미발송 목록 보기 ({total_stock_n:,}건)", expanded=False):
+                            period_scanned = set()
+                            for dk in sorted_dates_ty:
+                                period_scanned.update(scan_dict_ty[dk])
+                            unsent = period_scanned - all_send_ty
+                            if unsent:
+                                scan_date_map_x = {}
+                                for dk in sorted_dates_ty:
+                                    for wn in scan_dict_ty[dk]:
+                                        if wn not in scan_date_map_x:
+                                            scan_date_map_x[wn] = dk
+                                unsent_rows = [{
+                                    "스캔일자": f"{int(scan_date_map_x.get(wn,'0000')[:2])}월 {int(scan_date_map_x.get(wn,'0000')[2:]):02d}일" if scan_date_map_x.get(wn) else "",
+                                    "운송장번호(고객사주문번호)": wn,
+                                } for wn in sorted(unsent)]
+                                unsent_df = pd.DataFrame(unsent_rows)
+                                st.dataframe(unsent_df, use_container_width=True, height=350)
+                            else:
+                                st.success("🎉 모든 스캔건이 발송 완료됐어요!")
+
+                        from openpyxl import Workbook as _WB
+                        from openpyxl.styles import PatternFill as _PF, Font as _Ft, Alignment as _Al, Border as _Bd, Side as _Sd
+                        buf_xl = _io.BytesIO()
+                        wb_xl = _WB(); ws_xl = wb_xl.active; ws_xl.title = "발송통계"
+                        headers_xl = list(result_df.columns)
+                        hdr_fill_xl = _PF("solid", fgColor="2C1A0E")
+                        hdr_font_xl = _Ft(bold=True, color="F3DFAD", size=11)
+                        thin_xl = _Bd(left=_Sd(style='thin', color='CCCCCC'), right=_Sd(style='thin', color='CCCCCC'),
+                                       top=_Sd(style='thin', color='CCCCCC'), bottom=_Sd(style='thin', color='CCCCCC'))
+                        for ci, h in enumerate(headers_xl, 1):
+                            c = ws_xl.cell(row=1, column=ci, value=h); c.fill = hdr_fill_xl; c.font = hdr_font_xl
+                            c.alignment = _Al(horizontal='center'); c.border = thin_xl
+                        for ri, rd in enumerate(result_df.itertuples(index=False), 2):
+                            for ci, val in enumerate(rd, 1):
+                                c = ws_xl.cell(row=ri, column=ci, value=val)
+                                c.alignment = _Al(horizontal='center'); c.border = thin_xl
+                        ws_xl.column_dimensions['A'].width = 14
+                        for ci in range(2, len(headers_xl)+1):
+                            ws_xl.column_dimensions[chr(64+ci)].width = 14
+                        wb_xl.save(buf_xl)
+                        st.download_button(
+                            f"⬇️ TY 티와이 통계 엑셀 다운로드",
+                            buf_xl.getvalue(),
+                            file_name=f"TY 티와이_경동발송통계_{today_kst_ty.strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="dash_xl_download_ty",
+                        )
+
+                except Exception as e:
+                    st.error(f"오류 발생: {e}")
+                    import traceback; st.code(traceback.format_exc())
+
+    with main_tab3:
+        st.markdown("""
+        <style>
+        .stat-hero-ky { background: linear-gradient(135deg, #2c1a0e 0%, #4a2e1a 100%); border-radius: 14px; padding: 24px 28px; margin-bottom: 20px; color: white; }
+        .stat-hero-ky .stat-hero-title { font-size: 22px; font-weight: 900; color: #f3dfad; letter-spacing: 1px; margin-bottom: 4px; }
+        .stat-hero-ky .stat-hero-date { font-size: 13px; color: #c8a878; letter-spacing: 2px; }
+        </style>
+        """, unsafe_allow_html=True)
+
+        from datetime import timezone, timedelta
+        KST_KY = timezone(timedelta(hours=9))
+        today_kst_ky = datetime.now(tz=KST_KY).date()
+        today_label_ky = f"{today_kst_ky.year}년 {today_kst_ky.month:02d}월 {today_kst_ky.day:02d}일"
+
+        st.markdown(f"""
+        <div class="stat-hero-ky">
+            <div class="stat-hero-title">📊 KY 쾌연 경동 발송 대시보드</div>
+            <div class="stat-hero-date">{today_label_ky}</div>
+        </div>
+        """, unsafe_allow_html=True)
+
+        # 관리자 스캔 누적 업로드
+        if is_admin():
+            with st.expander(f"🔧 관리자 — KY 쾌연 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
+                up_scan_ky = st.file_uploader(
+                    f"KY 쾌연 스캔 파일 (날짜-차수 컬럼 형태)",
+                    type=["xlsx", "xls"], key="dash_up_scan_ky"
+                )
+                if up_scan_ky:
+                    try:
+                        img_bytes_ky = up_scan_ky.read()
+                        with st.spinner("GitHub에 업로드 중..."):
+                            ok_ky = github_upload_image(img_bytes_ky, "ky_scan_cumulative.xlsx")
+                        if ok_ky:
+                            st.success(f"✅ KY 쾌연 스캔 파일 누적 저장 완료!")
+                        else:
+                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                        st.session_state["_scan_data_ky"] = img_bytes_ky
+                    except Exception as e:
+                        st.error(f"오류: {e}")
+
+        scan_data_ky = st.session_state.get("_scan_data_ky")
+        if not scan_data_ky:
+            scan_data_ky = github_load_image("ky_scan_cumulative.xlsx")
+            if scan_data_ky:
+                st.session_state["_scan_data_ky"] = scan_data_ky
+
+        if not scan_data_ky:
+            st.warning(f"📋 먼저 관리자 메뉴에서 KY 쾌연 스캔 파일을 업로드해 주세요.")
+        else:
+            send_file_ky = st.file_uploader(
+                f"📨 오늘의 KY 쾌연 경동 발송리스트 파일 업로드",
+                type=["xlsx", "xls"], key="dash_send_ky"
             )
 
-        except Exception as e:
-            st.error(f"오류 발생: {e}")
-            import traceback; st.code(traceback.format_exc())
+            if not send_file_ky:
+                st.info("👆 위에서 발송 파일을 업로드하면 대시보드가 자동으로 생성됩니다.")
+            else:
+                try:
+                    import re as _re
+                    import io as _io
+
+                    df_sc_ky = pd.read_excel(_io.BytesIO(scan_data_ky))
+                    xl_send_ky = pd.ExcelFile(send_file_ky)
+                    sheet_sel_ky = xl_send_ky.sheet_names[0]
+                    if len(xl_send_ky.sheet_names) > 1:
+                        sheet_sel_ky = st.selectbox("발송리스트 시트", xl_send_ky.sheet_names, key="dash_sheet_ky")
+                    df_sd_ky = pd.read_excel(send_file_ky, sheet_name=sheet_sel_ky)
+
+                    date_col_ky = next((c for c in df_sd_ky.columns if "발송" in str(c) and ("일" in str(c) or "접수" in str(c) or "구분" in str(c))), None)
+                    order_col_ky = next((c for c in df_sd_ky.columns if "주문번호" in str(c) or "고객사" in str(c)), None)
+
+                    if not date_col_ky or not order_col_ky:
+                        st.error(f"발송리스트에서 날짜/주문번호 컬럼을 못 찾았어요. 컬럼: {list(df_sd_ky.columns)}")
+                    else:
+                        df_sd_ky['_발송일'] = pd.to_datetime(df_sd_ky[date_col_ky], errors='coerce').dt.date
+                        df_sd_ky['_주문번호'] = df_sd_ky[order_col_ky].astype(str).str.strip().str.replace(r'\\.0$','',regex=True)
+
+                        send_by_date_ky = {}
+                        for _, row in df_sd_ky.iterrows():
+                            d = row['_발송일']
+                            if pd.isna(d): continue
+                            key = f"{d.month:02d}{d.day:02d}"
+                            send_by_date_ky.setdefault(key, set()).add(row['_주문번호'])
+                        all_send_ky = set(df_sd_ky['_주문번호'])
+
+                        scan_dict_ky = {}
+                        for col in df_sc_ky.columns:
+                            m = _re.match(r'^(\\d{4})', str(col))
+                            if m:
+                                dk = m.group(1)
+                                for v in df_sc_ky[col].dropna():
+                                    try: scan_dict_ky.setdefault(dk, set()).add(str(int(float(v))))
+                                    except: pass
+
+                        sorted_dates_ky = sorted(scan_dict_ky.keys())
+                        today_key_ky = f"{today_kst_ky.month:02d}{today_kst_ky.day:02d}"
+
+                        latest_send_ky = None
+                        if send_by_date_ky:
+                            latest_send_ky = sorted(send_by_date_ky.keys())[-1]
+
+                        focus_date_ky = today_key_ky if today_key_ky in send_by_date_ky else (latest_send_ky or today_key_ky)
+                        focus_label_ky = f"{int(focus_date_ky[:2])}월 {int(focus_date_ky[2:]):02d}일"
+
+                        today_scan_set_ky = scan_dict_ky.get(focus_date_ky, set())
+                        today_sent_set_ky = send_by_date_ky.get(focus_date_ky, set())
+
+                        cumulative_before_ky = set()
+                        for dk in sorted_dates_ky:
+                            if dk < focus_date_ky:
+                                cumulative_before_ky.update(scan_dict_ky[dk])
+
+                        today_scan_n = len(today_scan_set_ky)
+                        today_sent_n = len(today_sent_set_ky)
+                        same_day_n = len(today_scan_set_ky & today_sent_set_ky)
+                        prev_n = len(cumulative_before_ky & today_sent_set_ky)
+                        total_stock_n = len((cumulative_before_ky | today_scan_set_ky) - all_send_ky)
+                        process_rate_n = (same_day_n / today_scan_n * 100) if today_scan_n else 0.0
+
+                        st.markdown(f"### 📅 {focus_label_ky} 현황")
+                        rcols = st.columns(4)
+                        with rcols[0]:
+                            st.markdown(f'<div class="stat-card blue"><div class="label">오늘 스캔</div><div class="value">{today_scan_n:,}</div><div class="sub">건</div></div>', unsafe_allow_html=True)
+                        with rcols[1]:
+                            st.markdown(f'<div class="stat-card green"><div class="label">오늘 발송</div><div class="value">{today_sent_n:,}</div><div class="sub">건 (당일 {same_day_n} + 이전 {prev_n})</div></div>', unsafe_allow_html=True)
+                        with rcols[2]:
+                            st.markdown(f'<div class="stat-card orange"><div class="label">남은 재고</div><div class="value">{total_stock_n:,}</div><div class="sub">미발송 건</div></div>', unsafe_allow_html=True)
+                        with rcols[3]:
+                            st.markdown(f'<div class="stat-card gold"><div class="label">당일 처리율</div><div class="value">{process_rate_n:.1f}%</div><div class="sub">당일 스캔→당일 발송</div></div>', unsafe_allow_html=True)
+
+                        st.markdown("---")
+                        st.markdown("### 📈 최근 7일 추이")
+                        recent_dates_x = sorted_dates_ky[-7:] if len(sorted_dates_ky) >= 7 else sorted_dates_ky
+                        if recent_dates_x:
+                            chart_rows = []
+                            for dk in recent_dates_x:
+                                sc = scan_dict_ky[dk]
+                                sd = send_by_date_ky.get(dk, set())
+                                chart_rows.append({
+                                    "날짜": f"{int(dk[:2])}/{int(dk[2:]):02d}",
+                                    "스캔건": len(sc),
+                                    "당일발송": len(sc & sd),
+                                })
+                            chart_df = pd.DataFrame(chart_rows).set_index("날짜")
+                            st.bar_chart(chart_df, height=280, color=["#b8913a", "#2d6a2d"])
+
+                        st.markdown("---")
+                        st.markdown("### 📋 날짜별 통계")
+                        cumulative_x = set()
+                        rows_stat = []
+                        for dk in sorted_dates_ky:
+                            ts = scan_dict_ky[dk]
+                            cumulative_x.update(ts)
+                            sd = send_by_date_ky.get(dk, set())
+                            rows_stat.append({
+                                "날짜": f"{int(dk[:2])}월 {int(dk[2:]):02d}일",
+                                "당일스캔": len(ts),
+                                "당일발송": len(ts & sd),
+                                "이전스캔발송": len((cumulative_x - ts) & sd),
+                                "재고": len(ts - sd),
+                                "총재고": len(cumulative_x - all_send_ky),
+                            })
+                        result_df = pd.DataFrame(rows_stat)
+                        st.dataframe(
+                            result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
+                            use_container_width=True, height=400,
+                        )
+
+                        st.markdown("---")
+                        with st.expander(f"📋 전체 미발송 목록 보기 ({total_stock_n:,}건)", expanded=False):
+                            period_scanned = set()
+                            for dk in sorted_dates_ky:
+                                period_scanned.update(scan_dict_ky[dk])
+                            unsent = period_scanned - all_send_ky
+                            if unsent:
+                                scan_date_map_x = {}
+                                for dk in sorted_dates_ky:
+                                    for wn in scan_dict_ky[dk]:
+                                        if wn not in scan_date_map_x:
+                                            scan_date_map_x[wn] = dk
+                                unsent_rows = [{
+                                    "스캔일자": f"{int(scan_date_map_x.get(wn,'0000')[:2])}월 {int(scan_date_map_x.get(wn,'0000')[2:]):02d}일" if scan_date_map_x.get(wn) else "",
+                                    "운송장번호(고객사주문번호)": wn,
+                                } for wn in sorted(unsent)]
+                                unsent_df = pd.DataFrame(unsent_rows)
+                                st.dataframe(unsent_df, use_container_width=True, height=350)
+                            else:
+                                st.success("🎉 모든 스캔건이 발송 완료됐어요!")
+
+                        from openpyxl import Workbook as _WB
+                        from openpyxl.styles import PatternFill as _PF, Font as _Ft, Alignment as _Al, Border as _Bd, Side as _Sd
+                        buf_xl = _io.BytesIO()
+                        wb_xl = _WB(); ws_xl = wb_xl.active; ws_xl.title = "발송통계"
+                        headers_xl = list(result_df.columns)
+                        hdr_fill_xl = _PF("solid", fgColor="2C1A0E")
+                        hdr_font_xl = _Ft(bold=True, color="F3DFAD", size=11)
+                        thin_xl = _Bd(left=_Sd(style='thin', color='CCCCCC'), right=_Sd(style='thin', color='CCCCCC'),
+                                       top=_Sd(style='thin', color='CCCCCC'), bottom=_Sd(style='thin', color='CCCCCC'))
+                        for ci, h in enumerate(headers_xl, 1):
+                            c = ws_xl.cell(row=1, column=ci, value=h); c.fill = hdr_fill_xl; c.font = hdr_font_xl
+                            c.alignment = _Al(horizontal='center'); c.border = thin_xl
+                        for ri, rd in enumerate(result_df.itertuples(index=False), 2):
+                            for ci, val in enumerate(rd, 1):
+                                c = ws_xl.cell(row=ri, column=ci, value=val)
+                                c.alignment = _Al(horizontal='center'); c.border = thin_xl
+                        ws_xl.column_dimensions['A'].width = 14
+                        for ci in range(2, len(headers_xl)+1):
+                            ws_xl.column_dimensions[chr(64+ci)].width = 14
+                        wb_xl.save(buf_xl)
+                        st.download_button(
+                            f"⬇️ KY 쾌연 통계 엑셀 다운로드",
+                            buf_xl.getvalue(),
+                            file_name=f"KY 쾌연_경동발송통계_{today_kst_ky.strftime('%Y%m%d')}.xlsx",
+                            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            use_container_width=True,
+                            key="dash_xl_download_ky",
+                        )
+
+                except Exception as e:
+                    st.error(f"오류 발생: {e}")
+                    import traceback; st.code(traceback.format_exc())
 
 
 # ==============================
