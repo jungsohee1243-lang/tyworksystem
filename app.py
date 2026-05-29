@@ -3115,82 +3115,81 @@ def kyungdong_page():
         </div>
         """, unsafe_allow_html=True)
 
-        # 관리자 스캔 누적 업로드
-        if is_admin():
-            with st.expander(f"🔧 관리자 — TY 티와이 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
-                up_scan_ty = st.file_uploader(
-                    f"TY 티와이 스캔 파일 (날짜-차수 컬럼 형태)",
-                    type=["xlsx", "xls"], key="dash_up_scan_ty"
-                )
-                if up_scan_ty:
-                    try:
-                        import io as _io2
-                        new_bytes_ty = up_scan_ty.read()
-                        new_df_ty = pd.read_excel(_io2.BytesIO(new_bytes_ty))
+        # 스캔 누적 업로드 (모든 계정 가능)
+        with st.expander(f"📤 TY 티와이 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
+            up_scan_ty = st.file_uploader(
+                f"TY 티와이 스캔 파일 (날짜-차수 컬럼 형태)",
+                type=["xlsx", "xls"], key="dash_up_scan_ty"
+            )
+            if up_scan_ty:
+                try:
+                    import io as _io2
+                    new_bytes_ty = up_scan_ty.read()
+                    new_df_ty = pd.read_excel(_io2.BytesIO(new_bytes_ty))
 
-                        # 기존 파일 가져오기 (있으면 머지)
-                        existing_bytes_ty = github_load_image("ty_scan_cumulative.xlsx")
-                        if existing_bytes_ty:
-                            existing_df_ty = pd.read_excel(_io2.BytesIO(existing_bytes_ty))
-                            # 기존 데이터에서 모든 운송장 set 추출
-                            existing_all_ty = set()
-                            for col in existing_df_ty.columns:
-                                for v in existing_df_ty[col].dropna():
-                                    try: existing_all_ty.add(str(int(float(v))))
-                                    except: pass
-                            # 새 파일의 컬럼들 중 기존에 없는 컬럼만 + 중복 운송장 제거
-                            merged_cols = {}
-                            for col in existing_df_ty.columns:
-                                merged_cols[col] = existing_df_ty[col].dropna().tolist()
-                            new_added_count = 0
-                            for col in new_df_ty.columns:
-                                vals = new_df_ty[col].dropna()
-                                clean_vals = []
-                                for v in vals:
-                                    try:
-                                        wn = str(int(float(v)))
-                                        if wn not in existing_all_ty:
-                                            clean_vals.append(wn)
-                                            existing_all_ty.add(wn)
-                                            new_added_count += 1
-                                    except: pass
-                                if clean_vals:
-                                    # 기존 컬럼이면 덮어쓰지 않고 추가, 새 컬럼이면 생성
-                                    if col in merged_cols:
-                                        # 기존 컬럼에는 추가하지 않음 (중복 방지)
-                                        pass
-                                    else:
-                                        merged_cols[col] = clean_vals
-                            # 데이터프레임 재구성
-                            max_len = max((len(v) for v in merged_cols.values()), default=0)
-                            for k in merged_cols:
-                                merged_cols[k] = merged_cols[k] + [None] * (max_len - len(merged_cols[k]))
-                            merged_df_ty = pd.DataFrame(merged_cols)
+                    # 기존 파일 가져오기 (있으면 머지)
+                    existing_bytes_ty = github_load_image("ty_scan_cumulative.xlsx")
+                    if existing_bytes_ty:
+                        existing_df_ty = pd.read_excel(_io2.BytesIO(existing_bytes_ty))
+                        # 기존 데이터에서 모든 운송장 set 추출
+                        existing_all_ty = set()
+                        for col in existing_df_ty.columns:
+                            for v in existing_df_ty[col].dropna():
+                                try: existing_all_ty.add(str(int(float(v))))
+                                except: pass
+                        # 새 파일의 컬럼들 중 기존에 없는 컬럼만 + 중복 운송장 제거
+                        merged_cols = {}
+                        for col in existing_df_ty.columns:
+                            merged_cols[col] = existing_df_ty[col].dropna().tolist()
+                        new_added_count = 0
+                        for col in new_df_ty.columns:
+                            vals = new_df_ty[col].dropna()
+                            clean_vals = []
+                            for v in vals:
+                                try:
+                                    wn = str(int(float(v)))
+                                    if wn not in existing_all_ty:
+                                        clean_vals.append(wn)
+                                        existing_all_ty.add(wn)
+                                        new_added_count += 1
+                                except: pass
+                            if clean_vals:
+                                # 기존 컬럼이면 덮어쓰지 않고 추가, 새 컬럼이면 생성
+                                if col in merged_cols:
+                                    # 기존 컬럼에는 추가하지 않음 (중복 방지)
+                                    pass
+                                else:
+                                    merged_cols[col] = clean_vals
+                        # 데이터프레임 재구성
+                        max_len = max((len(v) for v in merged_cols.values()), default=0)
+                        for k in merged_cols:
+                            merged_cols[k] = merged_cols[k] + [None] * (max_len - len(merged_cols[k]))
+                        merged_df_ty = pd.DataFrame(merged_cols)
 
-                            # 엑셀로 저장
-                            out_buf = _io2.BytesIO()
-                            merged_df_ty.to_excel(out_buf, index=False)
-                            final_bytes_ty = out_buf.getvalue()
+                        # 엑셀로 저장
+                        out_buf = _io2.BytesIO()
+                        merged_df_ty.to_excel(out_buf, index=False)
+                        final_bytes_ty = out_buf.getvalue()
 
-                            with st.spinner("GitHub에 업로드 중..."):
-                                ok_ty = github_upload_image(final_bytes_ty, "ty_scan_cumulative.xlsx")
-                            if ok_ty:
-                                st.success(f"✅ TY 티와이 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
-                            else:
-                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
-                            st.session_state["_scan_data_ty"] = final_bytes_ty
+                        with st.spinner("GitHub에 업로드 중..."):
+                            ok_ty = github_upload_image(final_bytes_ty, "ty_scan_cumulative.xlsx")
+                        if ok_ty:
+                            st.success(f"✅ TY 티와이 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
                         else:
-                            # 첫 업로드
-                            with st.spinner("GitHub에 업로드 중..."):
-                                ok_ty = github_upload_image(new_bytes_ty, "ty_scan_cumulative.xlsx")
-                            if ok_ty:
-                                st.success(f"✅ TY 티와이 첫 스캔 파일 저장 완료!")
-                            else:
-                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
-                            st.session_state["_scan_data_ty"] = new_bytes_ty
-                    except Exception as e:
-                        st.error(f"오류: {e}")
-                        import traceback; st.code(traceback.format_exc())
+                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                        st.session_state["_scan_data_ty"] = final_bytes_ty
+                    else:
+                        # 첫 업로드
+                        with st.spinner("GitHub에 업로드 중..."):
+                            ok_ty = github_upload_image(new_bytes_ty, "ty_scan_cumulative.xlsx")
+                        if ok_ty:
+                            st.success(f"✅ TY 티와이 첫 스캔 파일 저장 완료!")
+                        else:
+                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                        st.session_state["_scan_data_ty"] = new_bytes_ty
+                except Exception as e:
+                    st.error(f"오류: {e}")
+                    import traceback; st.code(traceback.format_exc())
 
         scan_data_ty = st.session_state.get("_scan_data_ty")
         if not scan_data_ty:
@@ -3315,10 +3314,19 @@ def kyungdong_page():
                                 "총재고": len(cumulative_x - all_send_ty),
                             })
                         result_df = pd.DataFrame(rows_stat)
-                        st.dataframe(
-                            result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
-                            use_container_width=True, height=400,
-                        )
+                        if not result_df.empty and "당일스캔" in result_df.columns and "당일발송" in result_df.columns:
+                            try:
+                                st.dataframe(
+                                    result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
+                                    use_container_width=True, height=400,
+                                )
+                            except Exception:
+                                st.dataframe(result_df, use_container_width=True, height=400)
+                        else:
+                            if result_df.empty:
+                                st.info("표시할 통계 데이터가 없습니다.")
+                            else:
+                                st.dataframe(result_df, use_container_width=True, height=400)
 
                         st.markdown("---")
 
@@ -3474,71 +3482,70 @@ def kyungdong_page():
         </div>
         """, unsafe_allow_html=True)
 
-        # 관리자 스캔 누적 업로드
-        if is_admin():
-            with st.expander(f"🔧 관리자 — KY 쾌연 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
-                up_scan_ky = st.file_uploader(
-                    f"KY 쾌연 스캔 파일 (날짜-차수 컬럼 형태)",
-                    type=["xlsx", "xls"], key="dash_up_scan_ky"
-                )
-                if up_scan_ky:
-                    try:
-                        import io as _io3
-                        new_bytes_ky = up_scan_ky.read()
-                        new_df_ky = pd.read_excel(_io3.BytesIO(new_bytes_ky))
+        # 스캔 누적 업로드 (모든 계정 가능)
+        with st.expander(f"📤 KY 쾌연 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
+            up_scan_ky = st.file_uploader(
+                f"KY 쾌연 스캔 파일 (날짜-차수 컬럼 형태)",
+                type=["xlsx", "xls"], key="dash_up_scan_ky"
+            )
+            if up_scan_ky:
+                try:
+                    import io as _io3
+                    new_bytes_ky = up_scan_ky.read()
+                    new_df_ky = pd.read_excel(_io3.BytesIO(new_bytes_ky))
 
-                        existing_bytes_ky = github_load_image("ky_scan_cumulative.xlsx")
-                        if existing_bytes_ky:
-                            existing_df_ky = pd.read_excel(_io3.BytesIO(existing_bytes_ky))
-                            existing_all_ky = set()
-                            for col in existing_df_ky.columns:
-                                for v in existing_df_ky[col].dropna():
-                                    try: existing_all_ky.add(str(int(float(v))))
-                                    except: pass
-                            merged_cols = {}
-                            for col in existing_df_ky.columns:
-                                merged_cols[col] = existing_df_ky[col].dropna().tolist()
-                            new_added_count = 0
-                            for col in new_df_ky.columns:
-                                vals = new_df_ky[col].dropna()
-                                clean_vals = []
-                                for v in vals:
-                                    try:
-                                        wn = str(int(float(v)))
-                                        if wn not in existing_all_ky:
-                                            clean_vals.append(wn)
-                                            existing_all_ky.add(wn)
-                                            new_added_count += 1
-                                    except: pass
-                                if clean_vals and col not in merged_cols:
-                                    merged_cols[col] = clean_vals
-                            max_len = max((len(v) for v in merged_cols.values()), default=0)
-                            for k in merged_cols:
-                                merged_cols[k] = merged_cols[k] + [None] * (max_len - len(merged_cols[k]))
-                            merged_df_ky = pd.DataFrame(merged_cols)
+                    existing_bytes_ky = github_load_image("ky_scan_cumulative.xlsx")
+                    if existing_bytes_ky:
+                        existing_df_ky = pd.read_excel(_io3.BytesIO(existing_bytes_ky))
+                        existing_all_ky = set()
+                        for col in existing_df_ky.columns:
+                            for v in existing_df_ky[col].dropna():
+                                try: existing_all_ky.add(str(int(float(v))))
+                                except: pass
+                        merged_cols = {}
+                        for col in existing_df_ky.columns:
+                            merged_cols[col] = existing_df_ky[col].dropna().tolist()
+                        new_added_count = 0
+                        for col in new_df_ky.columns:
+                            vals = new_df_ky[col].dropna()
+                            clean_vals = []
+                            for v in vals:
+                                try:
+                                    wn = str(int(float(v)))
+                                    if wn not in existing_all_ky:
+                                        clean_vals.append(wn)
+                                        existing_all_ky.add(wn)
+                                        new_added_count += 1
+                                except: pass
+                            if clean_vals and col not in merged_cols:
+                                merged_cols[col] = clean_vals
+                        max_len = max((len(v) for v in merged_cols.values()), default=0)
+                        for k in merged_cols:
+                            merged_cols[k] = merged_cols[k] + [None] * (max_len - len(merged_cols[k]))
+                        merged_df_ky = pd.DataFrame(merged_cols)
 
-                            out_buf = _io3.BytesIO()
-                            merged_df_ky.to_excel(out_buf, index=False)
-                            final_bytes_ky = out_buf.getvalue()
+                        out_buf = _io3.BytesIO()
+                        merged_df_ky.to_excel(out_buf, index=False)
+                        final_bytes_ky = out_buf.getvalue()
 
-                            with st.spinner("GitHub에 업로드 중..."):
-                                ok_ky = github_upload_image(final_bytes_ky, "ky_scan_cumulative.xlsx")
-                            if ok_ky:
-                                st.success(f"✅ KY 쾌연 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
-                            else:
-                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
-                            st.session_state["_scan_data_ky"] = final_bytes_ky
+                        with st.spinner("GitHub에 업로드 중..."):
+                            ok_ky = github_upload_image(final_bytes_ky, "ky_scan_cumulative.xlsx")
+                        if ok_ky:
+                            st.success(f"✅ KY 쾌연 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
                         else:
-                            with st.spinner("GitHub에 업로드 중..."):
-                                ok_ky = github_upload_image(new_bytes_ky, "ky_scan_cumulative.xlsx")
-                            if ok_ky:
-                                st.success(f"✅ KY 쾌연 첫 스캔 파일 저장 완료!")
-                            else:
-                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
-                            st.session_state["_scan_data_ky"] = new_bytes_ky
-                    except Exception as e:
-                        st.error(f"오류: {e}")
-                        import traceback; st.code(traceback.format_exc())
+                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                        st.session_state["_scan_data_ky"] = final_bytes_ky
+                    else:
+                        with st.spinner("GitHub에 업로드 중..."):
+                            ok_ky = github_upload_image(new_bytes_ky, "ky_scan_cumulative.xlsx")
+                        if ok_ky:
+                            st.success(f"✅ KY 쾌연 첫 스캔 파일 저장 완료!")
+                        else:
+                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                        st.session_state["_scan_data_ky"] = new_bytes_ky
+                except Exception as e:
+                    st.error(f"오류: {e}")
+                    import traceback; st.code(traceback.format_exc())
 
         scan_data_ky = st.session_state.get("_scan_data_ky")
         if not scan_data_ky:
@@ -3663,10 +3670,19 @@ def kyungdong_page():
                                 "총재고": len(cumulative_x - all_send_ky),
                             })
                         result_df = pd.DataFrame(rows_stat)
-                        st.dataframe(
-                            result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
-                            use_container_width=True, height=400,
-                        )
+                        if not result_df.empty and "당일스캔" in result_df.columns and "당일발송" in result_df.columns:
+                            try:
+                                st.dataframe(
+                                    result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
+                                    use_container_width=True, height=400,
+                                )
+                            except Exception:
+                                st.dataframe(result_df, use_container_width=True, height=400)
+                        else:
+                            if result_df.empty:
+                                st.info("표시할 통계 데이터가 없습니다.")
+                            else:
+                                st.dataframe(result_df, use_container_width=True, height=400)
 
                         st.markdown("---")
 
