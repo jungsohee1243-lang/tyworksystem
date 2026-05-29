@@ -3124,16 +3124,73 @@ def kyungdong_page():
                 )
                 if up_scan_ty:
                     try:
-                        img_bytes_ty = up_scan_ty.read()
-                        with st.spinner("GitHub에 업로드 중..."):
-                            ok_ty = github_upload_image(img_bytes_ty, "ty_scan_cumulative.xlsx")
-                        if ok_ty:
-                            st.success(f"✅ TY 티와이 스캔 파일 누적 저장 완료!")
+                        import io as _io2
+                        new_bytes_ty = up_scan_ty.read()
+                        new_df_ty = pd.read_excel(_io2.BytesIO(new_bytes_ty))
+
+                        # 기존 파일 가져오기 (있으면 머지)
+                        existing_bytes_ty = github_load_image("ty_scan_cumulative.xlsx")
+                        if existing_bytes_ty:
+                            existing_df_ty = pd.read_excel(_io2.BytesIO(existing_bytes_ty))
+                            # 기존 데이터에서 모든 운송장 set 추출
+                            existing_all_ty = set()
+                            for col in existing_df_ty.columns:
+                                for v in existing_df_ty[col].dropna():
+                                    try: existing_all_ty.add(str(int(float(v))))
+                                    except: pass
+                            # 새 파일의 컬럼들 중 기존에 없는 컬럼만 + 중복 운송장 제거
+                            merged_cols = {}
+                            for col in existing_df_ty.columns:
+                                merged_cols[col] = existing_df_ty[col].dropna().tolist()
+                            new_added_count = 0
+                            for col in new_df_ty.columns:
+                                vals = new_df_ty[col].dropna()
+                                clean_vals = []
+                                for v in vals:
+                                    try:
+                                        wn = str(int(float(v)))
+                                        if wn not in existing_all_ty:
+                                            clean_vals.append(wn)
+                                            existing_all_ty.add(wn)
+                                            new_added_count += 1
+                                    except: pass
+                                if clean_vals:
+                                    # 기존 컬럼이면 덮어쓰지 않고 추가, 새 컬럼이면 생성
+                                    if col in merged_cols:
+                                        # 기존 컬럼에는 추가하지 않음 (중복 방지)
+                                        pass
+                                    else:
+                                        merged_cols[col] = clean_vals
+                            # 데이터프레임 재구성
+                            max_len = max((len(v) for v in merged_cols.values()), default=0)
+                            for k in merged_cols:
+                                merged_cols[k] = merged_cols[k] + [None] * (max_len - len(merged_cols[k]))
+                            merged_df_ty = pd.DataFrame(merged_cols)
+
+                            # 엑셀로 저장
+                            out_buf = _io2.BytesIO()
+                            merged_df_ty.to_excel(out_buf, index=False)
+                            final_bytes_ty = out_buf.getvalue()
+
+                            with st.spinner("GitHub에 업로드 중..."):
+                                ok_ty = github_upload_image(final_bytes_ty, "ty_scan_cumulative.xlsx")
+                            if ok_ty:
+                                st.success(f"✅ TY 티와이 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
+                            else:
+                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.session_state["_scan_data_ty"] = final_bytes_ty
                         else:
-                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
-                        st.session_state["_scan_data_ty"] = img_bytes_ty
+                            # 첫 업로드
+                            with st.spinner("GitHub에 업로드 중..."):
+                                ok_ty = github_upload_image(new_bytes_ty, "ty_scan_cumulative.xlsx")
+                            if ok_ty:
+                                st.success(f"✅ TY 티와이 첫 스캔 파일 저장 완료!")
+                            else:
+                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.session_state["_scan_data_ty"] = new_bytes_ty
                     except Exception as e:
                         st.error(f"오류: {e}")
+                        import traceback; st.code(traceback.format_exc())
 
         scan_data_ty = st.session_state.get("_scan_data_ty")
         if not scan_data_ty:
@@ -3264,23 +3321,102 @@ def kyungdong_page():
                         )
 
                         st.markdown("---")
+
+                        # ── 3일 이상 미발송 경고 ──
+                        period_scanned = set()
+                        for dk in sorted_dates_ty:
+                            period_scanned.update(scan_dict_ty[dk])
+                        unsent = period_scanned - all_send_ty
+
+                        scan_date_map_x = {}
+                        for dk in sorted_dates_ty:
+                            for wn in scan_dict_ty[dk]:
+                                if wn not in scan_date_map_x:
+                                    scan_date_map_x[wn] = dk
+
+                        # 3일 이상 지난 미발송 추출
+                        from datetime import date as _date
+                        today_d = today_kst_ty
+                        delayed_rows = []
+                        recent_rows = []
+                        for wn in unsent:
+                            dk = scan_date_map_x.get(wn)
+                            if not dk:
+                                continue
+                            try:
+                                mm, dd = int(dk[:2]), int(dk[2:])
+                                scan_d = _date(today_d.year, mm, dd)
+                                if scan_d > today_d:
+                                    scan_d = _date(today_d.year - 1, mm, dd)
+                                days_diff = (today_d - scan_d).days
+                            except:
+                                days_diff = 0
+                            row = {
+                                "스캔일자": f"{mm}월 {dd:02d}일",
+                                "경과일": f"{days_diff}일",
+                                "운송장번호": wn,
+                                "_days": days_diff,
+                            }
+                            if days_diff >= 3:
+                                delayed_rows.append(row)
+                            else:
+                                recent_rows.append(row)
+
+                        if delayed_rows:
+                            st.error(f"🚨 3일 이상 미발송 운송장 **{len(delayed_rows):,}건** — 확인 필요!")
+                            delayed_df = pd.DataFrame(sorted(delayed_rows, key=lambda x: -x["_days"])).drop(columns=["_days"])
+                            st.dataframe(
+                                delayed_df.style.apply(lambda x: ['background-color: #ffe0e0; color: #c00'] * len(x), axis=1),
+                                use_container_width=True, height=300,
+                            )
+
+                            # 3일 미발송 엑셀 다운로드
+                            from openpyxl import Workbook as _WBd
+                            from openpyxl.styles import PatternFill as _PFd, Font as _Ftd, Alignment as _Ald, Border as _Bdd, Side as _Sdd
+                            import io as _iod
+                            buf_d = _iod.BytesIO()
+                            wb_d = _WBd(); ws_d = wb_d.active; ws_d.title = "3일이상미발송"
+                            hdrs_d = ["스캔일자", "경과일", "운송장번호"]
+                            for ci, h in enumerate(hdrs_d, 1):
+                                c = ws_d.cell(row=1, column=ci, value=h)
+                                c.fill = _PFd("solid", fgColor="C00000")
+                                c.font = _Ftd(bold=True, color="FFFFFF", size=11)
+                                c.alignment = _Ald(horizontal='center')
+                            red_fill_d = _PFd("solid", fgColor="FFE0E0")
+                            for ri, rd in enumerate(delayed_df.itertuples(index=False), 2):
+                                for ci, val in enumerate(rd, 1):
+                                    c = ws_d.cell(row=ri, column=ci, value=val)
+                                    c.alignment = _Ald(horizontal='center')
+                                    c.fill = red_fill_d
+                            ws_d.column_dimensions['A'].width = 14
+                            ws_d.column_dimensions['B'].width = 12
+                            ws_d.column_dimensions['C'].width = 22
+                            wb_d.save(buf_d)
+                            st.download_button(
+                                f"⬇️ 3일 이상 미발송 엑셀 다운로드",
+                                buf_d.getvalue(),
+                                file_name=f"3일이상미발송_{today_d.strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key="delayed_download_ty",
+                            )
+
                         with st.expander(f"📋 전체 미발송 목록 보기 ({total_stock_n:,}건)", expanded=False):
-                            period_scanned = set()
-                            for dk in sorted_dates_ty:
-                                period_scanned.update(scan_dict_ty[dk])
-                            unsent = period_scanned - all_send_ty
                             if unsent:
-                                scan_date_map_x = {}
-                                for dk in sorted_dates_ty:
-                                    for wn in scan_dict_ty[dk]:
-                                        if wn not in scan_date_map_x:
-                                            scan_date_map_x[wn] = dk
-                                unsent_rows = [{
-                                    "스캔일자": f"{int(scan_date_map_x.get(wn,'0000')[:2])}월 {int(scan_date_map_x.get(wn,'0000')[2:]):02d}일" if scan_date_map_x.get(wn) else "",
-                                    "운송장번호(고객사주문번호)": wn,
-                                } for wn in sorted(unsent)]
-                                unsent_df = pd.DataFrame(unsent_rows)
-                                st.dataframe(unsent_df, use_container_width=True, height=350)
+                                all_unsent_rows = sorted(delayed_rows + recent_rows, key=lambda x: -x["_days"])
+                                all_unsent_df = pd.DataFrame(all_unsent_rows).drop(columns=["_days"])
+                                def _hl(row):
+                                    if "일" in str(row["경과일"]):
+                                        try:
+                                            d = int(str(row["경과일"]).replace("일",""))
+                                            if d >= 3:
+                                                return ['background-color: #ffe0e0; color: #c00'] * len(row)
+                                        except: pass
+                                    return [''] * len(row)
+                                st.dataframe(
+                                    all_unsent_df.style.apply(_hl, axis=1),
+                                    use_container_width=True, height=350,
+                                )
                             else:
                                 st.success("🎉 모든 스캔건이 발송 완료됐어요!")
 
@@ -3347,16 +3483,62 @@ def kyungdong_page():
                 )
                 if up_scan_ky:
                     try:
-                        img_bytes_ky = up_scan_ky.read()
-                        with st.spinner("GitHub에 업로드 중..."):
-                            ok_ky = github_upload_image(img_bytes_ky, "ky_scan_cumulative.xlsx")
-                        if ok_ky:
-                            st.success(f"✅ KY 쾌연 스캔 파일 누적 저장 완료!")
+                        import io as _io3
+                        new_bytes_ky = up_scan_ky.read()
+                        new_df_ky = pd.read_excel(_io3.BytesIO(new_bytes_ky))
+
+                        existing_bytes_ky = github_load_image("ky_scan_cumulative.xlsx")
+                        if existing_bytes_ky:
+                            existing_df_ky = pd.read_excel(_io3.BytesIO(existing_bytes_ky))
+                            existing_all_ky = set()
+                            for col in existing_df_ky.columns:
+                                for v in existing_df_ky[col].dropna():
+                                    try: existing_all_ky.add(str(int(float(v))))
+                                    except: pass
+                            merged_cols = {}
+                            for col in existing_df_ky.columns:
+                                merged_cols[col] = existing_df_ky[col].dropna().tolist()
+                            new_added_count = 0
+                            for col in new_df_ky.columns:
+                                vals = new_df_ky[col].dropna()
+                                clean_vals = []
+                                for v in vals:
+                                    try:
+                                        wn = str(int(float(v)))
+                                        if wn not in existing_all_ky:
+                                            clean_vals.append(wn)
+                                            existing_all_ky.add(wn)
+                                            new_added_count += 1
+                                    except: pass
+                                if clean_vals and col not in merged_cols:
+                                    merged_cols[col] = clean_vals
+                            max_len = max((len(v) for v in merged_cols.values()), default=0)
+                            for k in merged_cols:
+                                merged_cols[k] = merged_cols[k] + [None] * (max_len - len(merged_cols[k]))
+                            merged_df_ky = pd.DataFrame(merged_cols)
+
+                            out_buf = _io3.BytesIO()
+                            merged_df_ky.to_excel(out_buf, index=False)
+                            final_bytes_ky = out_buf.getvalue()
+
+                            with st.spinner("GitHub에 업로드 중..."):
+                                ok_ky = github_upload_image(final_bytes_ky, "ky_scan_cumulative.xlsx")
+                            if ok_ky:
+                                st.success(f"✅ KY 쾌연 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
+                            else:
+                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.session_state["_scan_data_ky"] = final_bytes_ky
                         else:
-                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
-                        st.session_state["_scan_data_ky"] = img_bytes_ky
+                            with st.spinner("GitHub에 업로드 중..."):
+                                ok_ky = github_upload_image(new_bytes_ky, "ky_scan_cumulative.xlsx")
+                            if ok_ky:
+                                st.success(f"✅ KY 쾌연 첫 스캔 파일 저장 완료!")
+                            else:
+                                st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.session_state["_scan_data_ky"] = new_bytes_ky
                     except Exception as e:
                         st.error(f"오류: {e}")
+                        import traceback; st.code(traceback.format_exc())
 
         scan_data_ky = st.session_state.get("_scan_data_ky")
         if not scan_data_ky:
@@ -3487,23 +3669,102 @@ def kyungdong_page():
                         )
 
                         st.markdown("---")
+
+                        # ── 3일 이상 미발송 경고 ──
+                        period_scanned = set()
+                        for dk in sorted_dates_ky:
+                            period_scanned.update(scan_dict_ky[dk])
+                        unsent = period_scanned - all_send_ky
+
+                        scan_date_map_x = {}
+                        for dk in sorted_dates_ky:
+                            for wn in scan_dict_ky[dk]:
+                                if wn not in scan_date_map_x:
+                                    scan_date_map_x[wn] = dk
+
+                        # 3일 이상 지난 미발송 추출
+                        from datetime import date as _date
+                        today_d = today_kst_ky
+                        delayed_rows = []
+                        recent_rows = []
+                        for wn in unsent:
+                            dk = scan_date_map_x.get(wn)
+                            if not dk:
+                                continue
+                            try:
+                                mm, dd = int(dk[:2]), int(dk[2:])
+                                scan_d = _date(today_d.year, mm, dd)
+                                if scan_d > today_d:
+                                    scan_d = _date(today_d.year - 1, mm, dd)
+                                days_diff = (today_d - scan_d).days
+                            except:
+                                days_diff = 0
+                            row = {
+                                "스캔일자": f"{mm}월 {dd:02d}일",
+                                "경과일": f"{days_diff}일",
+                                "운송장번호": wn,
+                                "_days": days_diff,
+                            }
+                            if days_diff >= 3:
+                                delayed_rows.append(row)
+                            else:
+                                recent_rows.append(row)
+
+                        if delayed_rows:
+                            st.error(f"🚨 3일 이상 미발송 운송장 **{len(delayed_rows):,}건** — 확인 필요!")
+                            delayed_df = pd.DataFrame(sorted(delayed_rows, key=lambda x: -x["_days"])).drop(columns=["_days"])
+                            st.dataframe(
+                                delayed_df.style.apply(lambda x: ['background-color: #ffe0e0; color: #c00'] * len(x), axis=1),
+                                use_container_width=True, height=300,
+                            )
+
+                            # 3일 미발송 엑셀 다운로드
+                            from openpyxl import Workbook as _WBd
+                            from openpyxl.styles import PatternFill as _PFd, Font as _Ftd, Alignment as _Ald, Border as _Bdd, Side as _Sdd
+                            import io as _iod
+                            buf_d = _iod.BytesIO()
+                            wb_d = _WBd(); ws_d = wb_d.active; ws_d.title = "3일이상미발송"
+                            hdrs_d = ["스캔일자", "경과일", "운송장번호"]
+                            for ci, h in enumerate(hdrs_d, 1):
+                                c = ws_d.cell(row=1, column=ci, value=h)
+                                c.fill = _PFd("solid", fgColor="C00000")
+                                c.font = _Ftd(bold=True, color="FFFFFF", size=11)
+                                c.alignment = _Ald(horizontal='center')
+                            red_fill_d = _PFd("solid", fgColor="FFE0E0")
+                            for ri, rd in enumerate(delayed_df.itertuples(index=False), 2):
+                                for ci, val in enumerate(rd, 1):
+                                    c = ws_d.cell(row=ri, column=ci, value=val)
+                                    c.alignment = _Ald(horizontal='center')
+                                    c.fill = red_fill_d
+                            ws_d.column_dimensions['A'].width = 14
+                            ws_d.column_dimensions['B'].width = 12
+                            ws_d.column_dimensions['C'].width = 22
+                            wb_d.save(buf_d)
+                            st.download_button(
+                                f"⬇️ 3일 이상 미발송 엑셀 다운로드",
+                                buf_d.getvalue(),
+                                file_name=f"3일이상미발송_{today_d.strftime('%Y%m%d')}.xlsx",
+                                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                use_container_width=True,
+                                key="delayed_download_ky",
+                            )
+
                         with st.expander(f"📋 전체 미발송 목록 보기 ({total_stock_n:,}건)", expanded=False):
-                            period_scanned = set()
-                            for dk in sorted_dates_ky:
-                                period_scanned.update(scan_dict_ky[dk])
-                            unsent = period_scanned - all_send_ky
                             if unsent:
-                                scan_date_map_x = {}
-                                for dk in sorted_dates_ky:
-                                    for wn in scan_dict_ky[dk]:
-                                        if wn not in scan_date_map_x:
-                                            scan_date_map_x[wn] = dk
-                                unsent_rows = [{
-                                    "스캔일자": f"{int(scan_date_map_x.get(wn,'0000')[:2])}월 {int(scan_date_map_x.get(wn,'0000')[2:]):02d}일" if scan_date_map_x.get(wn) else "",
-                                    "운송장번호(고객사주문번호)": wn,
-                                } for wn in sorted(unsent)]
-                                unsent_df = pd.DataFrame(unsent_rows)
-                                st.dataframe(unsent_df, use_container_width=True, height=350)
+                                all_unsent_rows = sorted(delayed_rows + recent_rows, key=lambda x: -x["_days"])
+                                all_unsent_df = pd.DataFrame(all_unsent_rows).drop(columns=["_days"])
+                                def _hl(row):
+                                    if "일" in str(row["경과일"]):
+                                        try:
+                                            d = int(str(row["경과일"]).replace("일",""))
+                                            if d >= 3:
+                                                return ['background-color: #ffe0e0; color: #c00'] * len(row)
+                                        except: pass
+                                    return [''] * len(row)
+                                st.dataframe(
+                                    all_unsent_df.style.apply(_hl, axis=1),
+                                    use_container_width=True, height=350,
+                                )
                             else:
                                 st.success("🎉 모든 스캔건이 발송 완료됐어요!")
 
