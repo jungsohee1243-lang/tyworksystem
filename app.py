@@ -1877,52 +1877,87 @@ import base64 as _b64
 
 def _gh_headers():
     token = st.secrets.get("GITHUB_TOKEN", "")
-    return {"Authorization": f"token {token}", "Accept": "application/vnd.github.v3+json"}
+    # Fine-grained PAT(github_pat_...)과 Classic PAT 모두 Bearer로 동작
+    return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
 
 def _gh_repo():
     return st.secrets.get("GITHUB_REPO", "")
 
-def github_upload_image(image_bytes, filename):
-    """이미지를 GitHub 레포 dashboard/ 폴더에 업로드."""
-    import requests as _req
-    repo = _gh_repo()
+def _gh_check_secrets():
+    """토큰/레포 설정 여부 확인. 문제 있으면 설명 문자열 반환, 없으면 None."""
+    token = st.secrets.get("GITHUB_TOKEN", "")
+    repo = st.secrets.get("GITHUB_REPO", "")
+    if not token:
+        return "GITHUB_TOKEN이 Streamlit Secrets에 설정되지 않았습니다."
     if not repo:
-        return False
+        return "GITHUB_REPO가 Streamlit Secrets에 설정되지 않았습니다."
+    return None
+
+def github_upload_image(image_bytes, filename):
+    """파일을 GitHub 레포 dashboard/ 폴더에 업로드. (1MB 초과 xlsx 지원)
+    반환값: (성공여부: bool, 오류메시지: str|None)
+    """
+    import requests as _req
+    err = _gh_check_secrets()
+    if err:
+        return False, err
+    repo = _gh_repo()
     url = f"https://api.github.com/repos/{repo}/contents/dashboard/{filename}"
+    hdrs = _gh_headers()
     # 기존 파일 SHA 조회 (업데이트 시 필요)
-    r = _req.get(url, headers=_gh_headers())
-    sha = r.json().get("sha") if r.status_code == 200 else None
+    r = _req.get(url, headers=hdrs, timeout=30)
+    sha = None
+    if r.status_code == 200:
+        sha = r.json().get("sha")
+    elif r.status_code not in (404,):
+        return False, f"SHA 조회 실패 (HTTP {r.status_code}): {r.text[:200]}"
     data = {"message": f"update {filename}", "content": _b64.b64encode(image_bytes).decode()}
     if sha:
         data["sha"] = sha
-    r2 = _req.put(url, headers=_gh_headers(), json=data)
-    return r2.status_code in (200, 201)
+    r2 = _req.put(url, headers=hdrs, json=data, timeout=60)
+    if r2.status_code in (200, 201):
+        return True, None
+    return False, f"업로드 실패 (HTTP {r2.status_code}): {r2.text[:300]}"
 
 def github_load_image(filename):
-    """GitHub에서 이미지 로드."""
+    """GitHub에서 파일 로드. 1MB 초과 파일도 download_url로 처리."""
     import requests as _req
-    repo = _gh_repo()
-    if not repo:
+    if _gh_check_secrets():
         return None
+    repo = _gh_repo()
     url = f"https://api.github.com/repos/{repo}/contents/dashboard/{filename}"
-    r = _req.get(url, headers=_gh_headers())
+    r = _req.get(url, headers=_gh_headers(), timeout=30)
     if r.status_code == 200:
-        return _b64.b64decode(r.json()["content"])
+        body = r.json()
+        content = body.get("content")
+        if content:
+            # 1MB 미만: content 필드에 base64 직접 포함
+            try:
+                return _b64.b64decode(content)
+            except Exception:
+                pass
+        # 1MB 초과: content=null, download_url 로 직접 다운로드
+        download_url = body.get("download_url")
+        if download_url:
+            r2 = _req.get(download_url, timeout=60)
+            if r2.status_code == 200:
+                return r2.content
     return None
 
 def github_delete_image(filename):
-    """GitHub에서 이미지 삭제."""
+    """GitHub에서 파일 삭제."""
     import requests as _req
-    repo = _gh_repo()
-    if not repo:
+    if _gh_check_secrets():
         return False
+    repo = _gh_repo()
     url = f"https://api.github.com/repos/{repo}/contents/dashboard/{filename}"
-    r = _req.get(url, headers=_gh_headers())
+    hdrs = _gh_headers()
+    r = _req.get(url, headers=hdrs, timeout=30)
     if r.status_code != 200:
         return False
     sha = r.json().get("sha")
     data = {"message": f"delete {filename}", "sha": sha}
-    r2 = _req.delete(url, headers=_gh_headers(), json=data)
+    r2 = _req.delete(url, headers=hdrs, json=data, timeout=30)
     return r2.status_code == 200
 
 def load_dashboard_from_github():
@@ -2199,8 +2234,11 @@ def main_page():
                     img_bytes = up_sched.read()
                     st.session_state.dash_schedule = img_bytes
                     with st.spinner("저장 중..."):
-                        ok = github_upload_image(img_bytes, "schedule.png")
-                    st.success("작업일정 등록 완료!" + (" (영구저장)" if ok else " (임시저장)"))
+                        ok, gh_err = github_upload_image(img_bytes, "schedule.png")
+                    if ok:
+                        st.success("작업일정 등록 완료! (영구저장)")
+                    else:
+                        st.warning(f"임시저장만 됩니다. GitHub 오류: {gh_err}")
                 if st.session_state.dash_schedule:
                     if st.button("🗑 작업일정 삭제", key="del_sched"):
                         st.session_state.dash_schedule = None
@@ -2212,8 +2250,11 @@ def main_page():
                     img_bytes = up_ty.read()
                     st.session_state.dash_ty = img_bytes
                     with st.spinner("저장 중..."):
-                        ok = github_upload_image(img_bytes, "ty.png")
-                    st.success("TY 현황표 등록 완료!" + (" (영구저장)" if ok else " (임시저장)"))
+                        ok, gh_err = github_upload_image(img_bytes, "ty.png")
+                    if ok:
+                        st.success("TY 현황표 등록 완료! (영구저장)")
+                    else:
+                        st.warning(f"임시저장만 됩니다. GitHub 오류: {gh_err}")
                 if st.session_state.dash_ty:
                     if st.button("🗑 TY 현황표 삭제", key="del_ty"):
                         st.session_state.dash_ty = None
@@ -2225,8 +2266,11 @@ def main_page():
                     img_bytes = up_ky.read()
                     st.session_state.dash_ky = img_bytes
                     with st.spinner("저장 중..."):
-                        ok = github_upload_image(img_bytes, "ky.png")
-                    st.success("KY 현황표 등록 완료!" + (" (영구저장)" if ok else " (임시저장)"))
+                        ok, gh_err = github_upload_image(img_bytes, "ky.png")
+                    if ok:
+                        st.success("KY 현황표 등록 완료! (영구저장)")
+                    else:
+                        st.warning(f"임시저장만 됩니다. GitHub 오류: {gh_err}")
                 if st.session_state.dash_ky:
                     if st.button("🗑 KY 현황표 삭제", key="del_ky"):
                         st.session_state.dash_ky = None
@@ -3172,20 +3216,20 @@ def kyungdong_page():
                         final_bytes_ty = out_buf.getvalue()
 
                         with st.spinner("GitHub에 업로드 중..."):
-                            ok_ty = github_upload_image(final_bytes_ty, "ty_scan_cumulative.xlsx")
+                            ok_ty, gh_err_ty = github_upload_image(final_bytes_ty, "ty_scan_cumulative.xlsx")
                         if ok_ty:
                             st.success(f"✅ TY 티와이 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
                         else:
-                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.warning(f"⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.\n오류 상세: {gh_err_ty}")
                         st.session_state["_scan_data_ty"] = final_bytes_ty
                     else:
                         # 첫 업로드
                         with st.spinner("GitHub에 업로드 중..."):
-                            ok_ty = github_upload_image(new_bytes_ty, "ty_scan_cumulative.xlsx")
+                            ok_ty, gh_err_ty = github_upload_image(new_bytes_ty, "ty_scan_cumulative.xlsx")
                         if ok_ty:
                             st.success(f"✅ TY 티와이 첫 스캔 파일 저장 완료!")
                         else:
-                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.warning(f"⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.\n오류 상세: {gh_err_ty}")
                         st.session_state["_scan_data_ty"] = new_bytes_ty
                 except Exception as e:
                     st.error(f"오류: {e}")
@@ -3544,19 +3588,19 @@ def kyungdong_page():
                         final_bytes_ky = out_buf.getvalue()
 
                         with st.spinner("GitHub에 업로드 중..."):
-                            ok_ky = github_upload_image(final_bytes_ky, "ky_scan_cumulative.xlsx")
+                            ok_ky, gh_err_ky = github_upload_image(final_bytes_ky, "ky_scan_cumulative.xlsx")
                         if ok_ky:
                             st.success(f"✅ KY 쾌연 — 새로 추가된 운송장 {new_added_count:,}건 누적 저장 완료! (중복 자동 제외)")
                         else:
-                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.warning(f"⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.\n오류 상세: {gh_err_ky}")
                         st.session_state["_scan_data_ky"] = final_bytes_ky
                     else:
                         with st.spinner("GitHub에 업로드 중..."):
-                            ok_ky = github_upload_image(new_bytes_ky, "ky_scan_cumulative.xlsx")
+                            ok_ky, gh_err_ky = github_upload_image(new_bytes_ky, "ky_scan_cumulative.xlsx")
                         if ok_ky:
                             st.success(f"✅ KY 쾌연 첫 스캔 파일 저장 완료!")
                         else:
-                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                            st.warning(f"⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.\n오류 상세: {gh_err_ky}")
                         st.session_state["_scan_data_ky"] = new_bytes_ky
                 except Exception as e:
                     st.error(f"오류: {e}")
