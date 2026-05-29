@@ -3071,230 +3071,276 @@ def kyungdong_page():
                 key="kd_hakik_download",
             )
 
-    # ── 탭4: 발송 통계 ──────────────────────────────────────────────────────────
+    # ── 탭4: 발송 통계 대시보드 ─────────────────────────────────────────────────
     with tab4:
-        st.subheader("📊 경동 발송 통계")
-        st.caption("당일 스캔건 파일 + 경동 발송리스트 파일을 올리면 날짜별 통계를 자동 계산합니다.")
+        st.markdown("""
+        <style>
+        .stat-hero { background: linear-gradient(135deg, #2c1a0e 0%, #4a2e1a 100%); border-radius: 14px; padding: 24px 28px; margin-bottom: 20px; color: white; }
+        .stat-hero-title { font-size: 22px; font-weight: 900; color: #f3dfad; letter-spacing: 1px; margin-bottom: 4px; }
+        .stat-hero-date { font-size: 13px; color: #c8a878; letter-spacing: 2px; }
+        .stat-card { background: white; border-radius: 12px; padding: 20px 18px; border: 1px solid #e8e4de; text-align: center; height: 100%; }
+        .stat-card .label { font-size: 12px; color: #8a6a4a; letter-spacing: 1px; margin-bottom: 8px; font-weight: 600; }
+        .stat-card .value { font-size: 36px; font-weight: 900; color: #2c1a0e; line-height: 1; margin-bottom: 6px; }
+        .stat-card .sub { font-size: 11px; color: #b8913a; }
+        .stat-card.gold { background: linear-gradient(135deg, #fff8e8 0%, #ffe8a8 100%); }
+        .stat-card.gold .value { color: #8a5a10; }
+        .stat-card.green { background: linear-gradient(135deg, #e8f5e8 0%, #c8e8c8 100%); }
+        .stat-card.green .value { color: #2d6a2d; }
+        .stat-card.orange { background: linear-gradient(135deg, #fff0e0 0%, #ffd8a8 100%); }
+        .stat-card.orange .value { color: #b8550a; }
+        .stat-card.blue { background: linear-gradient(135deg, #e8f0ff 0%, #c8d8f0 100%); }
+        .stat-card.blue .value { color: #1b3a7b; }
+        </style>
+        """, unsafe_allow_html=True)
 
-        col_a, col_b = st.columns(2)
-        with col_a:
-            scan_file = st.file_uploader(
-                "📋 스캔건 파일 (날짜-차수 컬럼 형태)",
-                type=["xlsx", "xls"], key="stat_scan"
-            )
-        with col_b:
-            send_file = st.file_uploader(
-                "📨 경동 발송리스트 파일 (발송접수일 + 고객사주문번호)",
-                type=["xlsx", "xls"], key="stat_send"
-            )
+        # 한국 시간
+        from datetime import timezone, timedelta
+        KST = timezone(timedelta(hours=9))
+        today_kst = datetime.now(tz=KST).date()
+        today_label = f"{today_kst.year}년 {today_kst.month:02d}월 {today_kst.day:02d}일"
 
-        if scan_file and send_file:
-            try:
-                import re as _re
-                df_sc = pd.read_excel(scan_file)
-                # 발송리스트 시트 선택
-                xl_send = pd.ExcelFile(send_file)
-                if len(xl_send.sheet_names) > 1:
-                    sheet_sel = st.selectbox("발송리스트 시트 선택", xl_send.sheet_names, key="stat_sheet")
-                else:
-                    sheet_sel = xl_send.sheet_names[0]
-                df_sd = pd.read_excel(send_file, sheet_name=sheet_sel)
+        st.markdown(f"""
+        <div class="stat-hero">
+            <div class="stat-hero-title">📊 경동 발송 대시보드</div>
+            <div class="stat-hero-date">{today_label}</div>
+        </div>
+        """, unsafe_allow_html=True)
 
-                # 발송리스트 전처리
-                date_col = None
-                for c in df_sd.columns:
-                    if "발송" in str(c) and ("일" in str(c) or "접수" in str(c) or "구분" in str(c)):
-                        date_col = c; break
-                order_col = None
-                for c in df_sd.columns:
-                    if "주문번호" in str(c) or "고객사" in str(c):
-                        order_col = c; break
+        # 관리자 스캔 누적 업로드
+        if is_admin():
+            with st.expander("🔧 관리자 — 스캔 파일 누적 업로드 (GitHub 저장)", expanded=False):
+                up_scan = st.file_uploader(
+                    "스캔 파일 (날짜-차수 컬럼 형태)",
+                    type=["xlsx", "xls"], key="dash_up_scan"
+                )
+                if up_scan:
+                    try:
+                        img_bytes = up_scan.read()
+                        with st.spinner("GitHub에 업로드 중..."):
+                            ok = github_upload_image(img_bytes, "scan_cumulative.xlsx")
+                        if ok:
+                            st.success("✅ 스캔 파일 누적 저장 완료!")
+                        else:
+                            st.warning("⚠️ GitHub 저장 실패 — 임시 세션에만 저장됩니다.")
+                        st.session_state["_scan_data"] = img_bytes
+                    except Exception as e:
+                        st.error(f"오류: {e}")
 
-                if not date_col or not order_col:
-                    st.error(f"발송리스트에서 날짜/주문번호 컬럼을 찾지 못했습니다. 컬럼: {list(df_sd.columns)}")
-                    st.stop()
+        # 스캔 데이터 로드 (GitHub 또는 세션)
+        scan_data = st.session_state.get("_scan_data")
+        if not scan_data:
+            scan_data = github_load_image("scan_cumulative.xlsx")
+            if scan_data:
+                st.session_state["_scan_data"] = scan_data
 
-                df_sd['_발송일'] = pd.to_datetime(df_sd[date_col], errors='coerce').dt.date
-                df_sd['_주문번호'] = df_sd[order_col].astype(str).str.strip().str.replace(r'\.0$','',regex=True)
+        if not scan_data:
+            st.warning("📋 먼저 관리자 메뉴에서 스캔 파일을 업로드해 주세요.")
+            st.stop()
 
-                send_by_date = {}
-                for _, row in df_sd.iterrows():
-                    d = row['_발송일']
-                    if pd.isna(d): continue
-                    key = f"{d.month:02d}{d.day:02d}"
-                    send_by_date.setdefault(key, set()).add(row['_주문번호'])
-                all_send = set(df_sd['_주문번호'])
+        # 발송 파일 업로드
+        send_file = st.file_uploader(
+            "📨 오늘의 경동 발송리스트 파일 업로드",
+            type=["xlsx", "xls"], key="dash_send"
+        )
 
-                # 스캔건 날짜별 수집
-                scan_dict = {}
-                for col in df_sc.columns:
-                    m = _re.match(r'^(\d{4})', str(col))
-                    if m:
-                        dk = m.group(1)
-                        for v in df_sc[col].dropna():
-                            try: scan_dict.setdefault(dk, set()).add(str(int(float(v))))
-                            except: pass
+        if not send_file:
+            st.info("👆 위에서 발송 파일을 업로드하면 대시보드가 자동으로 생성됩니다.")
+            st.stop()
 
-                sorted_dates = sorted(scan_dict.keys())
-                cumulative = set()
-                rows_stat = []
+        try:
+            import re as _re
+            import io as _io
+
+            df_sc = pd.read_excel(_io.BytesIO(scan_data))
+            xl_send = pd.ExcelFile(send_file)
+            sheet_sel = xl_send.sheet_names[0]
+            if len(xl_send.sheet_names) > 1:
+                sheet_sel = st.selectbox("발송리스트 시트", xl_send.sheet_names, key="dash_sheet")
+            df_sd = pd.read_excel(send_file, sheet_name=sheet_sel)
+
+            # 발송리스트 전처리
+            date_col = next((c for c in df_sd.columns if "발송" in str(c) and ("일" in str(c) or "접수" in str(c) or "구분" in str(c))), None)
+            order_col = next((c for c in df_sd.columns if "주문번호" in str(c) or "고객사" in str(c)), None)
+
+            if not date_col or not order_col:
+                st.error(f"발송리스트에서 날짜/주문번호 컬럼을 못 찾았어요. 컬럼: {list(df_sd.columns)}")
+                st.stop()
+
+            df_sd['_발송일'] = pd.to_datetime(df_sd[date_col], errors='coerce').dt.date
+            df_sd['_주문번호'] = df_sd[order_col].astype(str).str.strip().str.replace(r'\.0$','',regex=True)
+
+            send_by_date = {}
+            for _, row in df_sd.iterrows():
+                d = row['_발송일']
+                if pd.isna(d): continue
+                key = f"{d.month:02d}{d.day:02d}"
+                send_by_date.setdefault(key, set()).add(row['_주문번호'])
+            all_send = set(df_sd['_주문번호'])
+
+            # 스캔건 날짜별
+            scan_dict = {}
+            for col in df_sc.columns:
+                m = _re.match(r'^(\d{4})', str(col))
+                if m:
+                    dk = m.group(1)
+                    for v in df_sc[col].dropna():
+                        try: scan_dict.setdefault(dk, set()).add(str(int(float(v))))
+                        except: pass
+
+            sorted_dates = sorted(scan_dict.keys())
+            today_key = f"{today_kst.month:02d}{today_kst.day:02d}"
+
+            # 최신 발송일 기준 (오늘 발송 없으면 가장 최근 발송일)
+            latest_send_date = None
+            if send_by_date:
+                send_dates_sorted = sorted(send_by_date.keys())
+                latest_send_date = send_dates_sorted[-1]
+
+            focus_date = today_key if today_key in send_by_date else (latest_send_date or today_key)
+            focus_label = f"{int(focus_date[:2])}월 {int(focus_date[2:]):02d}일"
+
+            # 오늘(또는 최근 발송일) 통계
+            today_scan_set = scan_dict.get(focus_date, set())
+            today_sent_set = send_by_date.get(focus_date, set())
+
+            cumulative_before = set()
+            for dk in sorted_dates:
+                if dk < focus_date:
+                    cumulative_before.update(scan_dict[dk])
+
+            today_scan      = len(today_scan_set)
+            today_sent      = len(today_sent_set)
+            same_day_sent   = len(today_scan_set & today_sent_set)
+            prev_sent       = len(cumulative_before & today_sent_set)
+            total_stock     = len((cumulative_before | today_scan_set) - all_send)
+            process_rate    = (same_day_sent / today_scan * 100) if today_scan else 0.0
+
+            # ── HERO 카드 4개 ──
+            st.markdown(f"### 📅 {focus_label} 현황")
+            r1 = st.columns(4)
+            with r1[0]:
+                st.markdown(f"""<div class="stat-card blue">
+                    <div class="label">오늘 스캔</div>
+                    <div class="value">{today_scan:,}</div>
+                    <div class="sub">건</div></div>""", unsafe_allow_html=True)
+            with r1[1]:
+                st.markdown(f"""<div class="stat-card green">
+                    <div class="label">오늘 발송</div>
+                    <div class="value">{today_sent:,}</div>
+                    <div class="sub">건 (당일 {same_day_sent} + 이전 {prev_sent})</div></div>""", unsafe_allow_html=True)
+            with r1[2]:
+                st.markdown(f"""<div class="stat-card orange">
+                    <div class="label">남은 재고</div>
+                    <div class="value">{total_stock:,}</div>
+                    <div class="sub">미발송 건</div></div>""", unsafe_allow_html=True)
+            with r1[3]:
+                st.markdown(f"""<div class="stat-card gold">
+                    <div class="label">당일 처리율</div>
+                    <div class="value">{process_rate:.1f}%</div>
+                    <div class="sub">당일 스캔 → 당일 발송</div></div>""", unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # ── 최근 7일 추이 차트 ──
+            st.markdown("### 📈 최근 7일 추이")
+            recent_dates = sorted_dates[-7:] if len(sorted_dates) >= 7 else sorted_dates
+            if recent_dates:
+                chart_rows = []
+                cum_chk = set()
                 for dk in sorted_dates:
-                    today_scan = scan_dict[dk]
-                    cumulative.update(today_scan)
-                    today_sent = send_by_date.get(dk, set())
-
-                    today_total    = len(today_scan)
-                    same_day_sent  = len(today_scan & today_sent)
-                    prev_sent      = len((cumulative - today_scan) & today_sent)
-                    stock_today    = today_total - same_day_sent
-                    total_stock    = len(cumulative - all_send)
-
-                    mon = int(dk[:2]); day = int(dk[2:])
-                    rows_stat.append({
-                        "날짜": f"{mon}월 {day:02d}일",
-                        "당일스캔건": today_total,
-                        "총재고": total_stock,
-                        "당일스캔발송건": same_day_sent,
-                        "이전스캔발송건": prev_sent,
-                        "재고": stock_today,
+                    if dk < (recent_dates[0] if recent_dates else "0000"):
+                        cum_chk.update(scan_dict[dk])
+                for dk in recent_dates:
+                    sc = scan_dict[dk]
+                    sd = send_by_date.get(dk, set())
+                    cum_chk.update(sc)
+                    chart_rows.append({
+                        "날짜": f"{int(dk[:2])}/{int(dk[2:]):02d}",
+                        "스캔건": len(sc),
+                        "당일발송": len(sc & sd),
                     })
+                chart_df = pd.DataFrame(chart_rows).set_index("날짜")
+                st.bar_chart(chart_df, height=280, color=["#b8913a", "#2d6a2d"])
 
-                result_df = pd.DataFrame(rows_stat)
+            st.markdown("---")
 
-                st.success(f"✅ 통계 계산 완료! 총 {len(result_df)}일치")
-                st.dataframe(
-                    result_df.style.highlight_max(
-                        subset=["당일스캔건","당일스캔발송건"], color="#FFF2CC"
-                    ).highlight_max(
-                        subset=["재고","총재고"], color="#FCE8D5"
-                    ),
-                    use_container_width=True,
-                    height=600,
-                )
+            # ── 날짜별 표 ──
+            st.markdown("### 📋 날짜별 통계")
+            cumulative = set()
+            rows_stat = []
+            for dk in sorted_dates:
+                today_scan_x = scan_dict[dk]
+                cumulative.update(today_scan_x)
+                today_sent_x = send_by_date.get(dk, set())
+                rows_stat.append({
+                    "날짜": f"{int(dk[:2])}월 {int(dk[2:]):02d}일",
+                    "당일스캔": len(today_scan_x),
+                    "당일발송": len(today_scan_x & today_sent_x),
+                    "이전스캔발송": len((cumulative - today_scan_x) & today_sent_x),
+                    "재고": len(today_scan_x - today_sent_x),
+                    "총재고": len(cumulative - all_send),
+                })
+            result_df = pd.DataFrame(rows_stat)
+            st.dataframe(
+                result_df.style.highlight_max(subset=["당일스캔","당일발송"], color="#FFF2CC"),
+                use_container_width=True, height=400,
+            )
 
-                # 엑셀 다운로드
-                import io as _io
-                from openpyxl import Workbook as _WB
-                from openpyxl.styles import PatternFill as _PF, Font as _Ft, Alignment as _Al, Border as _Bd, Side as _Sd
-                buf = _io.BytesIO()
-                wb2 = _WB()
-                ws2 = wb2.active
-                ws2.title = "발송통계"
-
-                headers = list(result_df.columns)
-                hdr_fill = _PF("solid", fgColor="1B2A6B")
-                hdr_font = _Ft(bold=True, color="FFFFFF", size=11)
-                yellow_fill = _PF("solid", fgColor="FFF2CC")
-                orange_fill = _PF("solid", fgColor="FFCE44")
-                thin = _Bd(left=_Sd(style='thin', color='CCCCCC'),
-                           right=_Sd(style='thin', color='CCCCCC'),
-                           top=_Sd(style='thin', color='CCCCCC'),
-                           bottom=_Sd(style='thin', color='CCCCCC'))
-
-                for ci, h in enumerate(headers, 1):
-                    cell = ws2.cell(row=1, column=ci, value=h)
-                    cell.fill = hdr_fill; cell.font = hdr_font
-                    cell.alignment = _Al(horizontal='center')
-                    cell.border = thin
-
-                for ri, row_data in enumerate(result_df.itertuples(index=False), 2):
-                    for ci, val in enumerate(row_data, 1):
-                        cell = ws2.cell(row=ri, column=ci, value=val)
-                        cell.alignment = _Al(horizontal='center')
-                        cell.border = thin
-                        col_name = headers[ci-1]
-                        if col_name in ["당일스캔건", "당일스캔발송건"]:
-                            cell.fill = yellow_fill
-                        elif col_name in ["재고", "총재고"]:
-                            cell.fill = orange_fill
-
-                ws2.column_dimensions['A'].width = 14
-                for ci in range(2, len(headers)+1):
-                    ws2.column_dimensions[chr(64+ci)].width = 16
-
-                wb2.save(buf)
-                st.download_button(
-                    "⬇️ 발송통계 엑셀 다운로드",
-                    buf.getvalue(),
-                    file_name="경동발송통계.xlsx",
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                    use_container_width=True,
-                    key="stat_download",
-                )
-
-                # ── 미발송 목록 ──────────────────────────────────────────────
-                st.markdown("---")
-                st.subheader("📋 전체 미발송 목록")
-
-                # 전체 누적 스캔 - 전체 발송 = 미발송
-                all_scanned = set()
+            # ── 미발송 목록 ──
+            st.markdown("---")
+            with st.expander(f"📋 전체 미발송 목록 보기 ({total_stock:,}건)", expanded=False):
+                period_scanned = set()
                 for dk in sorted_dates:
-                    all_scanned.update(scan_dict[dk])
-                unsent = all_scanned - all_send
-
-                st.info(f"전체 스캔 **{len(all_scanned):,}건** 중 미발송 **{len(unsent):,}건**")
-
+                    period_scanned.update(scan_dict[dk])
+                unsent = period_scanned - all_send
                 if unsent:
-                    # 각 운송장번호가 어느 날짜에 스캔됐는지 역추적
                     scan_date_map = {}
                     for dk in sorted_dates:
                         for wn in scan_dict[dk]:
                             if wn not in scan_date_map:
                                 scan_date_map[wn] = dk
-
-                    unsent_rows = []
-                    for wn in sorted(unsent):
-                        dk = scan_date_map.get(wn, "")
-                        mon = int(dk[:2]) if dk else 0
-                        day = int(dk[2:]) if dk else 0
-                        date_str = f"{mon}월 {day:02d}일" if dk else ""
-                        unsent_rows.append({
-                            "스캔일자": date_str,
-                            "운송장번호(고객사주문번호)": wn,
-                        })
-
+                    unsent_rows = [{
+                        "스캔일자": f"{int(scan_date_map.get(wn,'0000')[:2])}월 {int(scan_date_map.get(wn,'0000')[2:]):02d}일" if scan_date_map.get(wn) else "",
+                        "운송장번호(고객사주문번호)": wn,
+                    } for wn in sorted(unsent)]
                     unsent_df = pd.DataFrame(unsent_rows)
-                    st.dataframe(unsent_df, use_container_width=True, height=400)
-
-                    # 미발송 엑셀 다운로드
-                    buf2 = _io.BytesIO()
-                    wb3 = _WB()
-                    ws3 = wb3.active
-                    ws3.title = "미발송목록"
-
-                    h2 = ["스캔일자", "운송장번호(고객사주문번호)"]
-                    for ci, h in enumerate(h2, 1):
-                        cell = ws3.cell(row=1, column=ci, value=h)
-                        cell.fill = hdr_fill; cell.font = hdr_font
-                        cell.alignment = _Al(horizontal='center')
-                        cell.border = thin
-
-                    red_fill = _PF("solid", fgColor="F4CCCC")
-                    for ri, row_data in enumerate(unsent_df.itertuples(index=False), 2):
-                        for ci, val in enumerate(row_data, 1):
-                            cell = ws3.cell(row=ri, column=ci, value=val)
-                            cell.alignment = _Al(horizontal='center')
-                            cell.border = thin
-                            cell.fill = red_fill
-
-                    ws3.column_dimensions['A'].width = 14
-                    ws3.column_dimensions['B'].width = 28
-                    wb3.save(buf2)
-
-                    st.download_button(
-                        "⬇️ 미발송 목록 엑셀 다운로드",
-                        buf2.getvalue(),
-                        file_name="경동_미발송목록.xlsx",
-                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                        use_container_width=True,
-                        key="unsent_download",
-                    )
+                    st.dataframe(unsent_df, use_container_width=True, height=350)
                 else:
                     st.success("🎉 모든 스캔건이 발송 완료됐어요!")
 
-            except Exception as e:
-                st.error(f"오류 발생: {e}")
-                import traceback; st.code(traceback.format_exc())
+            # ── 엑셀 다운로드 ──
+            from openpyxl import Workbook as _WB
+            from openpyxl.styles import PatternFill as _PF, Font as _Ft, Alignment as _Al, Border as _Bd, Side as _Sd
+            buf = _io.BytesIO()
+            wb2 = _WB(); ws2 = wb2.active; ws2.title = "발송통계"
+            headers = list(result_df.columns)
+            hdr_fill = _PF("solid", fgColor="2C1A0E")
+            hdr_font = _Ft(bold=True, color="F3DFAD", size=11)
+            thin = _Bd(left=_Sd(style='thin', color='CCCCCC'), right=_Sd(style='thin', color='CCCCCC'),
+                       top=_Sd(style='thin', color='CCCCCC'), bottom=_Sd(style='thin', color='CCCCCC'))
+            for ci, h in enumerate(headers, 1):
+                c = ws2.cell(row=1, column=ci, value=h); c.fill = hdr_fill; c.font = hdr_font
+                c.alignment = _Al(horizontal='center'); c.border = thin
+            for ri, rd in enumerate(result_df.itertuples(index=False), 2):
+                for ci, val in enumerate(rd, 1):
+                    c = ws2.cell(row=ri, column=ci, value=val)
+                    c.alignment = _Al(horizontal='center'); c.border = thin
+            ws2.column_dimensions['A'].width = 14
+            for ci in range(2, len(headers)+1):
+                ws2.column_dimensions[chr(64+ci)].width = 14
+            wb2.save(buf)
+            st.download_button(
+                "⬇️ 통계 엑셀 다운로드",
+                buf.getvalue(),
+                file_name=f"경동발송통계_{today_kst.strftime('%Y%m%d')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True,
+                key="dash_xl_download",
+            )
+
+        except Exception as e:
+            st.error(f"오류 발생: {e}")
+            import traceback; st.code(traceback.format_exc())
 
 
 # ==============================
