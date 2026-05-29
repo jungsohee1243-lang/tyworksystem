@@ -3303,7 +3303,7 @@ def kyungdong_page():
 
                         scan_dict_ty = {}
                         for col in df_sc_ty.columns:
-                            m = _re.match(r'^(\\d{4})', str(col))
+                            m = _re.match(r'^(\d{4})', str(col))
                             if m:
                                 dk = m.group(1)
                                 for v in df_sc_ty[col].dropna():
@@ -3683,7 +3683,7 @@ def kyungdong_page():
 
                         scan_dict_ky = {}
                         for col in df_sc_ky.columns:
-                            m = _re.match(r'^(\\d{4})', str(col))
+                            m = _re.match(r'^(\d{4})', str(col))
                             if m:
                                 dk = m.group(1)
                                 for v in df_sc_ky[col].dropna():
