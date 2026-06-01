@@ -4510,6 +4510,14 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                 name_change_count += 1
                 add_log("품명변경", [i], [i], desc_col, before, after, "요청 품명 자동 변경", i)
 
+                # 품명 변경된 행: V(용도구분) → 3(배제) 으로 변경 + 색 표시
+                v_before = ali_ht_clean_text(df.at[i, col_v])
+                if v_before != "3":
+                    excel_set(i, col_v, "3")
+                    v_changed_cells.add((i, col_v))
+                    add_log("V변경(품명배제)", [i], [i], "V(용도구분)",
+                            v_before, "3", "품명 변경으로 인한 배제(3) 자동 처리", i)
+
     # AD 허용품목코드 6자리 문자형 + 30 시작코드 960719 변경
     if col_hs is not None:
         for i in df.index:
