@@ -1875,18 +1875,26 @@ if "dash_ky_name" not in st.session_state:
 # ── GitHub 이미지 저장/로드 함수 ──
 import base64 as _b64
 
+def _secret_get(key, default=""):
+    """secrets.toml 파일이 아예 없는 환경(로컬 실행 등)에서도 죽지 않게
+    st.secrets 값을 안전하게 읽는다. 없으면 기본값 반환."""
+    try:
+        return st.secrets.get(key, default)
+    except Exception:
+        return default
+
 def _gh_headers():
-    token = st.secrets.get("GITHUB_TOKEN", "")
+    token = _secret_get("GITHUB_TOKEN", "")
     # Fine-grained PAT(github_pat_...)과 Classic PAT 모두 Bearer로 동작
     return {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.v3+json"}
 
 def _gh_repo():
-    return st.secrets.get("GITHUB_REPO", "")
+    return _secret_get("GITHUB_REPO", "")
 
 def _gh_check_secrets():
     """토큰/레포 설정 여부 확인. 문제 있으면 설명 문자열 반환, 없으면 None."""
-    token = st.secrets.get("GITHUB_TOKEN", "")
-    repo = st.secrets.get("GITHUB_REPO", "")
+    token = _secret_get("GITHUB_TOKEN", "")
+    repo = _secret_get("GITHUB_REPO", "")
     if not token:
         return "GITHUB_TOKEN이 Streamlit Secrets에 설정되지 않았습니다."
     if not repo:
@@ -1982,7 +1990,7 @@ def _default_users():
 def load_users():
     """secrets에 [users] 섹션이 있으면 그걸 쓰고, 없으면 session_state 내장 계정 사용."""
     try:
-        raw = dict(st.secrets.get("users", {}))
+        raw = dict(_secret_get("users", {}))
         if raw:
             # secrets 형식: admin = "admin2024!|admin"  또는  admin = "admin2024!"
             users = {}
@@ -4267,6 +4275,7 @@ ALI_HT_NAME_MAP = {
     "Seed": "Seasoned Seed",
     "Walnut Kernels": "Processed Walnut Kernels",
     "Rice": "rice cake",
+    "Chili Powder": "Spicy Sauce",
 }
 
 def ali_ht_norm_col(c):
