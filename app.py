@@ -4761,24 +4761,39 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             if not first_detail:
                 continue
             desc_col, qty_col, unit_col = first_detail
+
+            # 단가에는 절대 0이 들어가면 안 되므로 최소 단가를 0.01불로 보장한다.
+            MIN_UNIT = 0.01
+
+            # 첫 상세 외에 값이 있는(품명이 있거나 단가가 있던) 나머지 상세 목록
+            other_details = []
+            for dcol2, qcol2, ucol2 in detail_groups:
+                if ucol2 == unit_col:
+                    continue
+                if ali_ht_clean_text(df.at[i, dcol2]) or unit_val(i, ucol2) > 0:
+                    other_details.append((dcol2, qcol2, ucol2))
+
+            # 나머지 상세를 최소 단가(0.01)로 채울 때 들어가는 금액. 첫 상세 단가 계산 시 미리 반영.
+            reserved = ali_ht_money(sum(MIN_UNIT * qty_val(i, qcol2) for _, qcol2, ucol2 in other_details))
+
             q = qty_val(i, qty_col)
             old_unit = unit_val(i, unit_col)
-            new_unit = ali_ht_money(target_total / q) if q else 2.00
+            # 첫 상세 단가: 목표 총액에서 나머지 최소금액을 뺀 값으로 맞추되, 0이 되지 않게 최소 0.01 보장
+            new_unit = max(MIN_UNIT, ali_ht_money((target_total - reserved) / q)) if q else MIN_UNIT
             excel_set(i, unit_col, new_unit)
             money_changed_cells.add((i, unit_col))
             old_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {old_unit}")
             new_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {new_unit}")
 
-            # 나머지 상세 단가가 있으면 0으로 조정해서 BA가 2.00에 맞도록 함
-            for dcol2, qcol2, ucol2 in detail_groups:
-                if ucol2 == unit_col:
+            # 나머지 상세 단가는 0 대신 최소 0.01로 맞춤 (단가에 0이 들어가지 않도록)
+            for dcol2, qcol2, ucol2 in other_details:
+                ou = unit_val(i, ucol2)
+                if ou == MIN_UNIT:
                     continue
-                if unit_val(i, ucol2) > 0:
-                    ou = unit_val(i, ucol2)
-                    excel_set(i, ucol2, 0.00)
-                    money_changed_cells.add((i, ucol2))
-                    old_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {ou}")
-                    new_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: 0.00")
+                excel_set(i, ucol2, MIN_UNIT)
+                money_changed_cells.add((i, ucol2))
+                old_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {ou}")
+                new_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {MIN_UNIT}")
             new_total = recalc_row_total(i)
             excel_set(i, col_total, new_total)
             money_changed_cells.add((i, col_total))
@@ -4786,7 +4801,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(old_units)}], 총금액 {old_total}")
             after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(new_units)}], 총금액 {new_total}")
         if modified:
-            add_log("배제분할", dup_idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), "V=3 동일 수취인·동일 품명·동일 금액 분할배송: 1건 원금액 유지, 나머지 1~3불 표시", modified[0])
+            add_log("배제분할", dup_idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), "V=3 동일 수취인·동일 품명·동일 금액 분할배송: 1건 원금액 유지, 나머지 1~3불대 표시(단가 0 금지, 최소 0.01불 보장)", modified[0])
 
     memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유"]
     memo_df = pd.DataFrame(logs, columns=memo_columns)
