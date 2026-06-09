@@ -1032,7 +1032,8 @@ def make_excel(df):
     output.seek(0)
     return output.getvalue()
 
-KAKAO_API_URL = "https://dapi.kakao.com/v2/local/search/address.json"
+JUSO_API_URL = "https://business.juso.go.kr/addrlink/addrLinkApi.do"
+DEFAULT_JUSO_API_KEY = os.getenv("JUSO_API_KEY", "U01TX0FVVEgyMDI2MDYwOTE2MjkzMzExOTAyODU=")
 
 HOUSE_NUM = r"\d{1,4}(?:-\d{1,4})?"
 ADMIN_JIBUN = r"(?:동|리|면|읍|가)"
@@ -1384,33 +1385,57 @@ def build_region_enriched_query(raw_addr: str, core_addr: str) -> str:
     parts.append(core_addr)
     return " ".join(parts).strip()
 
-def search_kakao_address(address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
-    headers = {"Authorization": f"KakaoAK {api_key}"}
-    params = {"query": str(address).strip()}
-    resp = session.get(KAKAO_API_URL, headers=headers, params=params, timeout=10)
+def search_juso_address(address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
+    """행안부 도로명주소 검색 API 호출."""
+    params = {
+        "confmKey": str(api_key).strip(),
+        "currentPage": 1,
+        "countPerPage": 20,
+        "keyword": str(address).strip(),
+        "resultType": "json",
+    }
+    resp = session.get(JUSO_API_URL, params=params, timeout=10)
     resp.raise_for_status()
-    return resp.json()
+    data = resp.json()
+    common = data.get("results", {}).get("common", {})
+    error_code = str(common.get("errorCode", "0"))
+    if error_code not in ("0", "E0000"):
+        raise ValueError(common.get("errorMessage") or f"도로명주소 API 오류 {error_code}")
+    return data
+
+# 기존 함수명을 남겨두어 다른 부분에서 호출해도 깨지지 않게 유지
+def search_kakao_address(address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
+    return search_juso_address(address, api_key, session)
+
+def parse_juso_docs(docs: list) -> Tuple[str, str, str, str, str]:
+    doc = docs[0]
+    road_addr = doc.get("roadAddr") or doc.get("roadAddrPart1") or ""
+    jibun_addr = doc.get("jibunAddr") or ""
+    zip_no = doc.get("zipNo") or ""
+    # 도로명주소 API는 카카오처럼 일반 위경도를 주지 않는 경우가 많습니다.
+    # 값이 있을 때만 참고용으로 출력합니다.
+    lat = doc.get("entY") or ""
+    lon = doc.get("entX") or ""
+    return road_addr, jibun_addr, lat, lon, zip_no
 
 def parse_kakao_docs(docs: list) -> Tuple[str, str, str, str]:
-    doc = docs[0]
-    road_addr = doc.get("road_address") or {}
-    jibun_addr = doc.get("address") or {}
-    return road_addr.get("address_name", ""), jibun_addr.get("address_name", ""), doc.get("y", ""), doc.get("x", "")
+    road_addr, jibun_addr, lat, lon, _zip_no = parse_juso_docs(docs)
+    return road_addr, jibun_addr, lat, lon
 
 def try_query(query: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
-    data = search_kakao_address(query, api_key, session)
-    docs = data.get("documents", [])
-    out = {"query": query, "count": len(docs), "road": "", "jibun": "", "lat": "", "lon": ""}
+    data = search_juso_address(query, api_key, session)
+    docs = data.get("results", {}).get("juso", []) or []
+    out = {"query": query, "count": len(docs), "road": "", "jibun": "", "lat": "", "lon": "", "zip": ""}
     if len(docs) == 1:
-        road_name, jibun_name, lat, lon = parse_kakao_docs(docs)
-        out.update({"road": road_name, "jibun": jibun_name, "lat": lat, "lon": lon})
+        road_name, jibun_name, lat, lon, zip_no = parse_juso_docs(docs)
+        out.update({"road": road_name, "jibun": jibun_name, "lat": lat, "lon": lon, "zip": zip_no})
     return out
 
-def classify_kakao_result(raw_address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
+def classify_juso_result(raw_address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
     addr = str(raw_address).strip()
     result = {
         "원본주소": raw_address, "조회주소": "", "판정": "",
-        "도로명주소": "", "지번주소": "", "위도": "", "경도": "", "오류사유": ""
+        "도로명주소": "", "지번주소": "", "위도": "", "경도": "", "우편번호": "", "오류사유": ""
     }
 
     if not addr or addr.lower() == "nan":
@@ -1421,7 +1446,7 @@ def classify_kakao_result(raw_address: str, api_key: str, session: requests.Sess
     try:
         r1 = try_query(addr, api_key, session)
         if r1["count"] == 1:
-            result.update({"조회주소": r1["query"], "판정": "정상", "도로명주소": r1["road"], "지번주소": r1["jibun"], "위도": r1["lat"], "경도": r1["lon"]})
+            result.update({"조회주소": r1["query"], "판정": "정상", "도로명주소": r1["road"], "지번주소": r1["jibun"], "위도": r1["lat"], "경도": r1["lon"], "우편번호": r1["zip"]})
             return result
 
         core_addr = extract_core_korean_address(addr)
@@ -1431,47 +1456,47 @@ def classify_kakao_result(raw_address: str, api_key: str, session: requests.Sess
         region_query = build_region_enriched_query(addr, core_addr)
         r2 = try_query(region_query, api_key, session) if region_query != core_addr else {"count": 0}
         if r2["count"] == 1:
-            result.update({"조회주소": r2["query"], "판정": "정상", "도로명주소": r2["road"], "지번주소": r2["jibun"], "위도": r2["lat"], "경도": r2["lon"]})
+            result.update({"조회주소": r2["query"], "판정": "정상", "도로명주소": r2["road"], "지번주소": r2["jibun"], "위도": r2["lat"], "경도": r2["lon"], "우편번호": r2["zip"]})
             return result
 
         r3 = try_query(core_addr, api_key, session)
         if r3["count"] == 1:
-            result.update({"조회주소": r3["query"], "판정": "정상", "도로명주소": r3["road"], "지번주소": r3["jibun"], "위도": r3["lat"], "경도": r3["lon"]})
+            result.update({"조회주소": r3["query"], "판정": "정상", "도로명주소": r3["road"], "지번주소": r3["jibun"], "위도": r3["lat"], "경도": r3["lon"], "우편번호": r3["zip"]})
             return result
 
         compact_core = compact_korean_spacing(core_addr)
         region_query2 = build_region_enriched_query(addr, compact_core)
         r4 = try_query(region_query2, api_key, session) if region_query2 != compact_core else {"count": 0}
         if r4["count"] == 1:
-            result.update({"조회주소": r4["query"], "판정": "정상", "도로명주소": r4["road"], "지번주소": r4["jibun"], "위도": r4["lat"], "경도": r4["lon"]})
+            result.update({"조회주소": r4["query"], "판정": "정상", "도로명주소": r4["road"], "지번주소": r4["jibun"], "위도": r4["lat"], "경도": r4["lon"], "우편번호": r4["zip"]})
             return result
 
         r5 = try_query(compact_core, api_key, session) if compact_core != core_addr else {"count": 0}
         if r5["count"] == 1:
-            result.update({"조회주소": r5["query"], "판정": "정상", "도로명주소": r5["road"], "지번주소": r5["jibun"], "위도": r5["lat"], "경도": r5["lon"]})
+            result.update({"조회주소": r5["query"], "판정": "정상", "도로명주소": r5["road"], "지번주소": r5["jibun"], "위도": r5["lat"], "경도": r5["lon"], "우편번호": r5["zip"]})
             return result
 
         result["판정"] = "오류"
         result["조회주소"] = region_query2 if region_query2 else compact_core
-        max_count = max(r1["count"], r2["count"], r3["count"], r4["count"], r5["count"])
+        max_count = max(r1.get("count", 0), r2.get("count", 0), r3.get("count", 0), r4.get("count", 0), r5.get("count", 0))
         result["오류사유"] = "조회 실패" if max_count == 0 else f"후보 다수(최대 {max_count}건)"
         return result
 
+    except ValueError as e:
+        result["판정"] = "오류"; result["오류사유"] = str(e); return result
     except requests.HTTPError as e:
         status_code = e.response.status_code if e.response is not None else ""
         result["판정"] = "오류"
-        if status_code == 401:
-            result["오류사유"] = "API 키 인증 오류"
-        elif status_code == 429:
-            result["오류사유"] = "호출 한도 초과"
-        else:
-            result["오류사유"] = f"HTTP 오류 {status_code}"
+        result["오류사유"] = "승인키/요청 오류" if status_code in (400, 401, 403) else f"HTTP 오류 {status_code}"
         return result
     except requests.RequestException:
         result["판정"] = "오류"; result["오류사유"] = "네트워크 오류"; return result
     except Exception as e:
         result["판정"] = "오류"; result["오류사유"] = f"처리 오류: {e}"; return result
 
+# 기존 호출명 유지
+def classify_kakao_result(raw_address: str, api_key: str, session: requests.Session) -> Dict[str, Any]:
+    return classify_juso_result(raw_address, api_key, session)
 
 
 def normalize_addr_for_detail_match(text: str) -> str:
@@ -2449,21 +2474,22 @@ def address_verify_page():
 
     st.markdown(
         '<div class="content-card"><div class="page-title">📍 주소 / 통관 검증</div>'
-        '<div class="page-sub">카카오 주소 API로 엑셀 주소를 검증하고 정상/오류 결과를 다운로드합니다.</div></div>',
+        '<div class="page-sub">행안부 도로명주소 검색 API로 엑셀 주소를 검증하고 정상/오류 결과를 다운로드합니다.</div></div>',
         unsafe_allow_html=True,
     )
 
     with st.expander("사용 안내", expanded=True):
         st.write("- 엑셀은 최소 2개 컬럼이 필요합니다. 예: 송장 / 주소")
-        st.write("- 카카오 REST API 키를 입력한 뒤 엑셀을 업로드하세요.")
+        st.write("- 행안부 도로명주소 검색 API 승인키를 입력한 뒤 엑셀을 업로드하세요.")
         st.write("- 결과는 전체결과, 정상, 오류 시트로 나누어 다운로드됩니다.")
         st.write("- 빠른 검증 모드는 중복 주소를 한 번만 조회하고, 여러 건을 동시에 처리합니다.")
 
     kakao_api_key = st.text_input(
-        "카카오 REST API 키",
+        "행안부 도로명주소 API 승인키",
         type="password",
-        help="Kakao Developers > 내 애플리케이션 > 앱 키 > REST API 키",
-        key="addr_kakao_api_key",
+        help="주소정보누리집/도로명주소 검색 API 승인키(confmKey)",
+        value=DEFAULT_JUSO_API_KEY,
+        key="addr_juso_api_key",
     )
 
     uploaded = st.file_uploader("주소 검증용 엑셀 업로드", type=["xlsx"], key="addr_excel_file")
@@ -2473,7 +2499,7 @@ def address_verify_page():
         return
 
     if not kakao_api_key:
-        st.warning("카카오 REST API 키를 먼저 입력해주세요.")
+        st.warning("행안부 도로명주소 API 승인키를 먼저 입력해주세요.")
         return
 
     try:
@@ -2506,7 +2532,7 @@ def address_verify_page():
     total_count = len(df)
     c_speed1, c_speed2 = st.columns(2)
     with c_speed1:
-        max_workers = st.slider("동시 처리 개수", min_value=1, max_value=10, value=6, step=1, help="값이 높을수록 빠르지만, 너무 높으면 카카오 API 호출 제한이 걸릴 수 있습니다.")
+        max_workers = st.slider("동시 처리 개수", min_value=1, max_value=10, value=6, step=1, help="값이 높을수록 빠르지만, 너무 높으면 과도한 동시 호출 시 일시 제한이 걸릴 수 있습니다.")
     with c_speed2:
         st.metric("실제 조회할 고유 주소 수", f"{unique_count:,} / {total_count:,}")
 
@@ -2540,7 +2566,7 @@ def address_verify_page():
                     raw_addr = addr
                     r = {
                         "원본주소": addr, "조회주소": "", "판정": "오류",
-                        "도로명주소": "", "지번주소": "", "위도": "", "경도": "",
+                        "도로명주소": "", "지번주소": "", "위도": "", "경도": "", "우편번호": "",
                         "오류사유": f"처리 오류: {e}"
                     }
                 results_by_addr[raw_addr] = r
@@ -2554,7 +2580,7 @@ def address_verify_page():
             addr_key = str(row[address_col])
             r = dict(results_by_addr.get(addr_key, {
                 "원본주소": row[address_col], "조회주소": "", "판정": "오류",
-                "도로명주소": "", "지번주소": "", "위도": "", "경도": "",
+                "도로명주소": "", "지번주소": "", "위도": "", "경도": "", "우편번호": "",
                 "오류사유": "결과 매칭 실패"
             }))
             r["송장"] = row[invoice_col]
@@ -2563,7 +2589,7 @@ def address_verify_page():
         progress.progress(1.0)
         status.text("완료")
 
-        result_df = pd.DataFrame(results)[["송장", "원본주소", "조회주소", "판정", "도로명주소", "지번주소", "위도", "경도", "오류사유"]]
+        result_df = pd.DataFrame(results)[["송장", "원본주소", "조회주소", "판정", "도로명주소", "지번주소", "우편번호", "위도", "경도", "오류사유"]]
         ok_df = result_df[result_df["판정"] == "정상"].copy()
         err_df = result_df[result_df["판정"] == "오류"].copy()
 
@@ -2581,7 +2607,7 @@ def address_verify_page():
         st.download_button(
             "⬇️ 주소검증 결과 다운로드",
             excel_bytes,
-            file_name="카카오_주소검증_결과_v8.xlsx",
+            file_name="행안부_주소검증_결과_v1.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
             use_container_width=True,
             key="addr_download",
