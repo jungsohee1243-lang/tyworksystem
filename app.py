@@ -4302,6 +4302,7 @@ ALI_HT_NAME_MAP = {
     "Walnut Kernels": "Processed Walnut Kernels",
     "Rice": "rice cake",
     "Chili Powder": "Spicy Sauce",
+    "PUMPKIN SEEDS": "Seasoned PUMPKIN SEEDS",
 }
 
 def ali_ht_norm_col(c):
@@ -4518,6 +4519,17 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             text_changed_cells.add((i, col_hawb))
             add_log("개별수정", [i], [i], "HAWB 문자형", before, after, "운송장번호 문자형 정리", i)
 
+    # 품명 특수문자 정리: é/É → e/E 변환 (품명 컬럼 전체)
+    for i in df.index:
+        for desc_col, _qty_col, _unit_col in detail_groups:
+            raw = df.at[i, desc_col]
+            if pd.isna(raw):
+                continue
+            cleaned = str(raw).replace("é", "e").replace("É", "E")
+            if cleaned != str(raw):
+                excel_set(i, desc_col, cleaned)
+                text_changed_cells.add((i, desc_col))
+
     # 품명 변경: 왼쪽 원본 품명 → 오른쪽 변경 품명 단방향 처리
     # Dried는 단순 전체 치환이 아니라, 품명 안에 Dried가 포함되고 Snack이 없을 때만
     # 첫 Dried 앞에 Seasoned를 붙인다. 예: Dried Fruit Mix → Seasoned Dried Fruit Mix
@@ -4679,9 +4691,9 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                     adjusted_150_count += 1
                     add_log("150~160보정", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"수취인별 합계 {group_total}불 → 149불대 보정", modified[0])
 
-        # 보정 후에도 160불 초과면 V=3 배제 처리
+        # 보정 후 최종 합계가 150불 이상이면 V=3 배제 처리
         final_total = ali_ht_money(sum(total_val(i) for i in idxs))
-        if final_total > 160:
+        if final_total >= 150:
             moved_to_v3_count += 1
             modified = []
             for i in idxs:
@@ -4693,7 +4705,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                     excluded_from_list_hawbs.append(hawb)
                     modified.append(i)
             if modified:
-                add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"수취인별 합계 {final_total}불로 160불 초과, 배제 처리", modified[0])
+                add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"수취인별 합계 {final_total}불로 150불 이상, 배제 처리", modified[0])
 
     # ── V=3 그룹 중 합계 150~152불 → 148~149불 보정 ──────────────────────────
     # K(성함)+O(전화)+L(주소) 기준으로 V=3 행을 묶고,
@@ -4924,7 +4936,7 @@ def ali_ht_convert_page():
     )
 
     uploaded = st.file_uploader("알리 HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file")
-    st.caption("기준: 원본 전체를 기준으로 분할배송 금액 조정, 150~160불 보정, 160불 초과 V=3 변경, HS CODE 정리 후 메모 시트를 생성합니다.")
+    st.caption("기준: 원본 전체를 기준으로 분할배송 금액 조정, 150~160불 보정, 보정 후 최종 합계 150불 이상 V=3 변경, HS CODE 정리 후 메모 시트를 생성합니다.")
 
     if uploaded:
         if st.button("✅ 알리 HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run"):
