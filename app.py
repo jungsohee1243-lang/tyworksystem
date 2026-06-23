@@ -4707,12 +4707,92 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             if modified:
                 add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"수취인별 합계 {final_total}불로 150불 이상, 배제 처리", modified[0])
 
+    # V=3 배제건 처리: 같은 수취인+전화+품명구성+동일 총금액 분할배송만 1건 유지, 나머지 1~3불 표시용으로 조정
+    v3_indices = [i for i in df.index if ali_ht_clean_text(df.at[i, col_v]) == "3"]
+    v3_dup_map = {}
+    for i in v3_indices:
+        amt = total_val(i)
+        sig = detail_signature(i)
+        if amt > 0 and sig:
+            v3_dup_map.setdefault((group_key(i), sig, amt), []).append(i)
+
+    v3_split_adjust_count = 0
+    v3_split_touched_rows = set()  # V=3 중복분할 대상 행은 단일건 149 보정에서 제외
+    for (_gkey, _sig, _amt), dup_idxs in v3_dup_map.items():
+        if len(dup_idxs) < 2:
+            continue
+        v3_split_touched_rows.update(dup_idxs)
+        v3_split_adjust_count += 1
+        keep = dup_idxs[0]
+        modified = []
+        before_lines = []
+        after_lines = []
+        for i in dup_idxs[1:]:
+            old_total = total_val(i)
+            old_units = []
+            new_units = []
+            # 첫 번째 상세 단가를 조정해서 총금액 2.00 내외로 표시
+            target_total = 2.00
+            first_detail = None
+            for desc_col, qty_col, unit_col in detail_groups:
+                if ali_ht_clean_text(df.at[i, desc_col]) or unit_val(i, unit_col) > 0:
+                    first_detail = (desc_col, qty_col, unit_col)
+                    break
+            if not first_detail:
+                continue
+            desc_col, qty_col, unit_col = first_detail
+
+            # 단가에는 절대 0이 들어가면 안 되므로 최소 단가를 0.01불로 보장한다.
+            MIN_UNIT = 0.01
+
+            # 첫 상세 외에 값이 있는(품명이 있거나 단가가 있던) 나머지 상세 목록
+            other_details = []
+            for dcol2, qcol2, ucol2 in detail_groups:
+                if ucol2 == unit_col:
+                    continue
+                if ali_ht_clean_text(df.at[i, dcol2]) or unit_val(i, ucol2) > 0:
+                    other_details.append((dcol2, qcol2, ucol2))
+
+            # 나머지 상세를 최소 단가(0.01)로 채울 때 들어가는 금액. 첫 상세 단가 계산 시 미리 반영.
+            reserved = ali_ht_money(sum(MIN_UNIT * qty_val(i, qcol2) for _, qcol2, ucol2 in other_details))
+
+            q = qty_val(i, qty_col)
+            old_unit = unit_val(i, unit_col)
+            # 첫 상세 단가: 목표 총액에서 나머지 최소금액을 뺀 값으로 맞추되, 0이 되지 않게 최소 0.01 보장
+            new_unit = max(MIN_UNIT, ali_ht_money((target_total - reserved) / q)) if q else MIN_UNIT
+            excel_set(i, unit_col, new_unit)
+            money_changed_cells.add((i, unit_col))
+            old_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {old_unit}")
+            new_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {new_unit}")
+
+            # 나머지 상세 단가는 0 대신 최소 0.01로 맞춤 (단가에 0이 들어가지 않도록)
+            for dcol2, qcol2, ucol2 in other_details:
+                ou = unit_val(i, ucol2)
+                if ou == MIN_UNIT:
+                    continue
+                excel_set(i, ucol2, MIN_UNIT)
+                money_changed_cells.add((i, ucol2))
+                old_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {ou}")
+                new_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {MIN_UNIT}")
+            new_total = recalc_row_total(i)
+            excel_set(i, col_total, new_total)
+            money_changed_cells.add((i, col_total))
+            modified.append(i)
+            before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(old_units)}], 총금액 {old_total}")
+            after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(new_units)}], 총금액 {new_total}")
+        if modified:
+            add_log("배제분할", dup_idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), "V=3 동일 수취인·동일 품명·동일 금액 분할배송: 1건 원금액 유지, 나머지 1~3불대 표시(단가 0 금지, 최소 0.01불 보장)", modified[0])
+
+
     # ── V=3 단일건 150~155불 → 149불 보정 ────────────────────────────────
     # V=3 행 중 BA 총금액이 150~155불인 단일 건만 149불로 맞춘다.
+    # 단, V=3 동일 수취인·동일 품명·동일 금액 중복분할 대상 행은 제외한다.
     # 156불 이상은 원래 규칙대로 건드리지 않는다.
     # 차감은 상세 품목 BO(단가)가 가장 높은 것부터 진행하고, 단가는 0.01불 미만으로 떨어지지 않게 한다.
     v3_150_adjusted_count = 0
     for i in [idx for idx in df.index if ali_ht_clean_text(df.at[idx, col_v]) == "3"]:
+        if i in v3_split_touched_rows:
+            continue
         row_total = total_val(i)
         if not (150 <= row_total <= 155):
             continue
@@ -4787,80 +4867,6 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                 i,
             )
     # ────────────────────────────────────────────────────────────────────────────
-
-    # V=3 배제건 처리: 같은 수취인+전화+품명구성+동일 총금액 분할배송만 1건 유지, 나머지 1~3불 표시용으로 조정
-    v3_indices = [i for i in df.index if ali_ht_clean_text(df.at[i, col_v]) == "3"]
-    v3_dup_map = {}
-    for i in v3_indices:
-        amt = total_val(i)
-        sig = detail_signature(i)
-        if amt > 0 and sig:
-            v3_dup_map.setdefault((group_key(i), sig, amt), []).append(i)
-
-    v3_split_adjust_count = 0
-    for (_gkey, _sig, _amt), dup_idxs in v3_dup_map.items():
-        if len(dup_idxs) < 2:
-            continue
-        v3_split_adjust_count += 1
-        keep = dup_idxs[0]
-        modified = []
-        before_lines = []
-        after_lines = []
-        for i in dup_idxs[1:]:
-            old_total = total_val(i)
-            old_units = []
-            new_units = []
-            # 첫 번째 상세 단가를 조정해서 총금액 2.00 내외로 표시
-            target_total = 2.00
-            first_detail = None
-            for desc_col, qty_col, unit_col in detail_groups:
-                if ali_ht_clean_text(df.at[i, desc_col]) or unit_val(i, unit_col) > 0:
-                    first_detail = (desc_col, qty_col, unit_col)
-                    break
-            if not first_detail:
-                continue
-            desc_col, qty_col, unit_col = first_detail
-
-            # 단가에는 절대 0이 들어가면 안 되므로 최소 단가를 0.01불로 보장한다.
-            MIN_UNIT = 0.01
-
-            # 첫 상세 외에 값이 있는(품명이 있거나 단가가 있던) 나머지 상세 목록
-            other_details = []
-            for dcol2, qcol2, ucol2 in detail_groups:
-                if ucol2 == unit_col:
-                    continue
-                if ali_ht_clean_text(df.at[i, dcol2]) or unit_val(i, ucol2) > 0:
-                    other_details.append((dcol2, qcol2, ucol2))
-
-            # 나머지 상세를 최소 단가(0.01)로 채울 때 들어가는 금액. 첫 상세 단가 계산 시 미리 반영.
-            reserved = ali_ht_money(sum(MIN_UNIT * qty_val(i, qcol2) for _, qcol2, ucol2 in other_details))
-
-            q = qty_val(i, qty_col)
-            old_unit = unit_val(i, unit_col)
-            # 첫 상세 단가: 목표 총액에서 나머지 최소금액을 뺀 값으로 맞추되, 0이 되지 않게 최소 0.01 보장
-            new_unit = max(MIN_UNIT, ali_ht_money((target_total - reserved) / q)) if q else MIN_UNIT
-            excel_set(i, unit_col, new_unit)
-            money_changed_cells.add((i, unit_col))
-            old_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {old_unit}")
-            new_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {new_unit}")
-
-            # 나머지 상세 단가는 0 대신 최소 0.01로 맞춤 (단가에 0이 들어가지 않도록)
-            for dcol2, qcol2, ucol2 in other_details:
-                ou = unit_val(i, ucol2)
-                if ou == MIN_UNIT:
-                    continue
-                excel_set(i, ucol2, MIN_UNIT)
-                money_changed_cells.add((i, ucol2))
-                old_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {ou}")
-                new_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {MIN_UNIT}")
-            new_total = recalc_row_total(i)
-            excel_set(i, col_total, new_total)
-            money_changed_cells.add((i, col_total))
-            modified.append(i)
-            before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(old_units)}], 총금액 {old_total}")
-            after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(new_units)}], 총금액 {new_total}")
-        if modified:
-            add_log("배제분할", dup_idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), "V=3 동일 수취인·동일 품명·동일 금액 분할배송: 1건 원금액 유지, 나머지 1~3불대 표시(단가 0 금지, 최소 0.01불 보장)", modified[0])
 
     memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유"]
     memo_df = pd.DataFrame(logs, columns=memo_columns)
