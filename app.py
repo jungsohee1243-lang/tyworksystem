@@ -4577,6 +4577,145 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                 reason = "30 시작 HS CODE → 960719 변경" if code.startswith("30") else "HS CODE 6자리 문자형 정리"
                 add_log("HS수정", [i], [i], "AD 허용품목코드", before, after, reason, i)
 
+    # ────────────────────────────────────────────────────────────────────────────
+    # 알리 HT 금액 조정 공통 함수
+    # - BA(총금액)를 기준으로 대상 판단
+    # - BO(단가)를 조정한 뒤 BA를 재계산
+    # - 단가는 0.01불 미만으로 내려가지 않도록 보호
+    # - 목표금액은 147~149불대 중 원금액에 가장 가까운 149불 우선
+    # ────────────────────────────────────────────────────────────────────────────
+    MIN_UNIT = 0.01
+
+    def ali_ht_target_147_149(current_total):
+        """원금액을 너무 많이 줄이지 않기 위해 149불을 우선 목표로 사용."""
+        return 149.00 if current_total >= 149 else ali_ht_money(current_total)
+
+    def get_money_candidates(idxs):
+        candidates = []
+        for i in idxs:
+            for desc_col, qty_col, unit_col in detail_groups:
+                desc = ali_ht_clean_text(df.at[i, desc_col])
+                unit = unit_val(i, unit_col)
+                qty = qty_val(i, qty_col)
+                if unit > MIN_UNIT and qty > 0 and (desc or unit):
+                    candidates.append({
+                        "idx": i,
+                        "desc_col": desc_col,
+                        "qty_col": qty_col,
+                        "unit_col": unit_col,
+                        "desc": desc,
+                        "unit": unit,
+                        "qty": qty,
+                        "row_total": unit * qty,
+                    })
+        candidates.sort(key=lambda x: (x["unit"], x["row_total"]), reverse=True)
+        return candidates
+
+    def reduce_group_to_target(idxs, target_total, *, max_reduce_unit_when_multi=6.00):
+        """idxs 묶음의 BA 합계를 target_total에 맞추도록 BO 단가를 차감.
+        여러 품목이면 각 품목에서 5~6불 수준으로 나눠 차감하고,
+        단일 품목이면 해당 품목에서 필요한 금액을 모두 차감한다.
+        """
+        before_lines, after_lines, modified = [], [], []
+        remaining = ali_ht_money(sum(total_val(i) for i in idxs) - target_total)
+        if remaining <= 0:
+            return modified, before_lines, after_lines
+
+        candidates = get_money_candidates(idxs)
+        if not candidates:
+            return modified, before_lines, after_lines
+
+        multi = len(candidates) > 1
+        # 여러 품목일 때도 한 번에 못 맞추면 2~3회 순환해 나눠 차감
+        loop_guard = 0
+        while remaining > 0 and loop_guard < 20:
+            loop_guard += 1
+            progressed = False
+            candidates = get_money_candidates(idxs)
+            if not candidates:
+                break
+            for cand in candidates:
+                if remaining <= 0:
+                    break
+                i = cand["idx"]
+                desc_col, qty_col, unit_col = cand["desc_col"], cand["qty_col"], cand["unit_col"]
+                desc = cand["desc"]
+                q = qty_val(i, qty_col)
+                old_unit = unit_val(i, unit_col)
+                old_row_total = total_val(i)
+                if old_unit <= MIN_UNIT or q <= 0:
+                    continue
+
+                max_by_min_unit = ali_ht_money(old_unit - MIN_UNIT)
+                if max_by_min_unit <= 0:
+                    continue
+
+                # 단일 품목은 한 품목에서 전부 차감, 여러 품목은 5~6불 단위로 분산
+                unit_cap = max_reduce_unit_when_multi if multi else max_by_min_unit
+                reduce_unit = min(unit_cap, ali_ht_money(remaining / q), max_by_min_unit)
+                if reduce_unit <= 0:
+                    continue
+
+                new_unit = ali_ht_money(old_unit - reduce_unit)
+                if new_unit < MIN_UNIT:
+                    new_unit = MIN_UNIT
+                if new_unit == old_unit:
+                    continue
+
+                excel_set(i, unit_col, new_unit)
+                money_changed_cells.add((i, unit_col))
+                new_row_total = recalc_row_total(i)
+                excel_set(i, col_total, new_row_total)
+                money_changed_cells.add((i, col_total))
+
+                actual_reduce = ali_ht_money(old_row_total - new_row_total)
+                if actual_reduce <= 0:
+                    continue
+                progressed = True
+                modified.append(i)
+                before_lines.append(f"{row_hawb(i)} {desc} 단가 {old_unit}, 총금액 {old_row_total}")
+                after_lines.append(f"{row_hawb(i)} {desc} 단가 {new_unit}, 총금액 {new_row_total}")
+                remaining = ali_ht_money(remaining - actual_reduce)
+            if not progressed:
+                break
+        return list(dict.fromkeys(modified)), before_lines, after_lines
+
+    def set_row_total_around(i, target_total):
+        """행 1건의 총금액을 target_total 근처로 맞춤. 첫 품목에 금액을 몰고 나머지는 0.01 유지."""
+        details = []
+        for desc_col, qty_col, unit_col in detail_groups:
+            desc = ali_ht_clean_text(df.at[i, desc_col])
+            unit = unit_val(i, unit_col)
+            qty = qty_val(i, qty_col)
+            if qty > 0 and (desc or unit > 0):
+                details.append((desc_col, qty_col, unit_col, desc, unit, qty))
+        if not details:
+            return [], []
+
+        # 단가가 가장 높은 품목을 메인 조정 품목으로 사용
+        details.sort(key=lambda x: x[4], reverse=True)
+        main = details[0]
+        others = details[1:]
+        before_units, after_units = [], []
+        reserved = ali_ht_money(sum(MIN_UNIT * q for *_rest, q in others))
+        desc_col, qty_col, unit_col, desc, old_unit, q = main
+        main_unit = max(MIN_UNIT, ali_ht_money((target_total - reserved) / q))
+        excel_set(i, unit_col, main_unit)
+        money_changed_cells.add((i, unit_col))
+        before_units.append(f"{desc}: {old_unit}")
+        after_units.append(f"{desc}: {main_unit}")
+
+        for dcol2, qcol2, ucol2, desc2, old_u2, q2 in others:
+            excel_set(i, ucol2, MIN_UNIT)
+            money_changed_cells.add((i, ucol2))
+            before_units.append(f"{desc2}: {old_u2}")
+            after_units.append(f"{desc2}: {MIN_UNIT}")
+
+        new_total = recalc_row_total(i)
+        excel_set(i, col_total, new_total)
+        money_changed_cells.add((i, col_total))
+        return before_units, after_units
+
     # V=1 목록건 처리
     v1_indices = [i for i in df.index if ali_ht_clean_text(df.at[i, col_v]) == "1"]
     groups = {}
@@ -4589,19 +4728,8 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     skipped_under_150_count = 0
 
     for key, idxs in groups.items():
-        original_group_total = ali_ht_money(sum(total_val(i) for i in idxs))
-
-        # 수취인 총합이 150불 미만이면 같은 품명이어도 수정 제외
-        if original_group_total < 150:
-            # 단순 정상건은 로그 과다 방지를 위해 중복 후보가 있을 때만 제외 기록
-            tmp = {}
-            for i in idxs:
-                tmp.setdefault((detail_signature(i), total_val(i)), []).append(i)
-            if any(len(v) >= 2 for v in tmp.values()):
-                skipped_under_150_count += 1
-            continue
-
-        # 분할배송 중복금액: 같은 수취인+전화+품명구성+총금액이 2건 이상이면 각 단가를 건수로 나눔
+        # 1) 같은 화주 + 같은 품명 + 같은 금액이면 금액을 건수대로 나눠 신고
+        #    (BA 총금액 및 BO 단가 모두 나눔)
         dup_map = {}
         for i in idxs:
             sig = detail_signature(i)
@@ -4628,7 +4756,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                     old_unit = unit_val(i, unit_col)
                     if old_unit <= 0:
                         continue
-                    new_unit = ali_ht_money(old_unit / n)
+                    new_unit = max(MIN_UNIT, ali_ht_money(old_unit / n))
                     if new_unit != old_unit:
                         excel_set(i, unit_col, new_unit)
                         money_changed_cells.add((i, unit_col))
@@ -4647,53 +4775,22 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
 
         group_total = ali_ht_money(sum(total_val(i) for i in idxs))
 
-        # 합계 150~160불은 149.00 이하로 금액 보정. 단가 큰 상세품목부터, 한 품명 단가 최대 5불 차감.
-        if 150 <= group_total <= 160:
-            need = ali_ht_money(group_total - 149.00)
-            if need > 0:
-                candidates = []
-                for i in idxs:
-                    for desc_col, qty_col, unit_col in detail_groups:
-                        desc = ali_ht_clean_text(df.at[i, desc_col])
-                        unit = unit_val(i, unit_col)
-                        qty = qty_val(i, qty_col)
-                        if unit > 0 and qty > 0 and (desc or unit):
-                            candidates.append((unit, unit * qty, i, desc_col, qty_col, unit_col, desc))
-                candidates.sort(reverse=True, key=lambda x: (x[0], x[1]))
-                remaining = need
-                modified = []
-                before_lines = []
-                after_lines = []
-                for _unit_sort, _total_sort, i, desc_col, qty_col, unit_col, desc in candidates:
-                    if remaining <= 0:
-                        break
-                    q = qty_val(i, qty_col)
-                    old_unit = unit_val(i, unit_col)
-                    old_row_total = total_val(i)
-                    # 한 품명 단가에서 최대 5불까지만 차감
-                    reduce_unit = min(5.00, ali_ht_money(remaining / q), old_unit - 0.01)
-                    if reduce_unit <= 0:
-                        continue
-                    new_unit = ali_ht_money(old_unit - reduce_unit)
-                    excel_set(i, unit_col, new_unit)
-                    money_changed_cells.add((i, unit_col))
-                    new_row_total = recalc_row_total(i)
-                    excel_set(i, col_total, new_row_total)
-                    money_changed_cells.add((i, col_total))
-                    actual_reduce = ali_ht_money(old_row_total - new_row_total)
-                    if actual_reduce <= 0:
-                        continue
-                    modified.append(i)
-                    before_lines.append(f"{row_hawb(i)} {desc} 단가 {old_unit}, 총금액 {old_row_total}")
-                    after_lines.append(f"{row_hawb(i)} {desc} 단가 {new_unit}, 총금액 {new_row_total}")
-                    remaining = ali_ht_money(remaining - actual_reduce)
-                if modified:
-                    adjusted_150_count += 1
-                    add_log("150~160보정", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"수취인별 합계 {group_total}불 → 149불대 보정", modified[0])
+        if group_total < 150:
+            skipped_under_150_count += 1
+            continue
 
-        # 보정 후 최종 합계가 150불 이상이면 V=3 배제 처리
+        # 2) 같은 화주 합계 150~156불 → 147~149불대, 149불 우선 보정
+        if 150 <= group_total <= 156:
+            target = ali_ht_target_147_149(group_total)
+            modified, before_lines, after_lines = reduce_group_to_target(idxs, target)
+            if modified:
+                adjusted_150_count += 1
+                final_total = ali_ht_money(sum(total_val(i) for i in idxs))
+                add_log("목록150~156보정", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"V=1 수취인별 합계 {group_total}불 → {final_total}불 보정(147~149불대, 단가 최소 0.01불)", modified[0])
+
+        # 3) 보정 후에도 157불 이상이면 V=3 배제 처리
         final_total = ali_ht_money(sum(total_val(i) for i in idxs))
-        if final_total >= 150:
+        if final_total >= 157:
             moved_to_v3_count += 1
             modified = []
             for i in idxs:
@@ -4705,165 +4802,63 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                     excluded_from_list_hawbs.append(hawb)
                     modified.append(i)
             if modified:
-                add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"수취인별 합계 {final_total}불로 150불 이상, 배제 처리", modified[0])
+                add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"V=1 수취인별 합계 {final_total}불로 157불 이상, V=3 배제 처리", modified[0])
 
-    # V=3 배제건 처리: 같은 수취인+전화+품명구성+동일 총금액 분할배송만 1건 유지, 나머지 1~3불 표시용으로 조정
+    # V=3 간이/배제건 처리
     v3_indices = [i for i in df.index if ali_ht_clean_text(df.at[i, col_v]) == "3"]
-    v3_dup_map = {}
+    v3_groups = {}
     for i in v3_indices:
-        amt = total_val(i)
-        sig = detail_signature(i)
-        if amt > 0 and sig:
-            v3_dup_map.setdefault((group_key(i), sig, amt), []).append(i)
+        v3_groups.setdefault(group_key(i), []).append(i)
 
     v3_split_adjust_count = 0
-    v3_split_touched_rows = set()  # V=3 중복분할 대상 행은 단일건 149 보정에서 제외
-    for (_gkey, _sig, _amt), dup_idxs in v3_dup_map.items():
-        if len(dup_idxs) < 2:
+    v3_150_adjusted_count = 0
+    v3_159_group_adjust_count = 0
+    v3_159_touched_rows = set()
+
+    # 1) 같은 화주 중 159불 이상 건이 있으면, 제일 높은 금액 1건만 유지하고 나머지는 약 10불로 변경
+    for key, idxs in v3_groups.items():
+        if not any(total_val(i) >= 159 for i in idxs):
             continue
-        v3_split_touched_rows.update(dup_idxs)
-        v3_split_adjust_count += 1
-        keep = dup_idxs[0]
+        keep = max(idxs, key=lambda x: total_val(x))
         modified = []
         before_lines = []
         after_lines = []
-        for i in dup_idxs[1:]:
-            old_total = total_val(i)
-            old_units = []
-            new_units = []
-            # 첫 번째 상세 단가를 조정해서 총금액 2.00 내외로 표시
-            target_total = 2.00
-            first_detail = None
-            for desc_col, qty_col, unit_col in detail_groups:
-                if ali_ht_clean_text(df.at[i, desc_col]) or unit_val(i, unit_col) > 0:
-                    first_detail = (desc_col, qty_col, unit_col)
-                    break
-            if not first_detail:
+        for i in idxs:
+            if i == keep:
                 continue
-            desc_col, qty_col, unit_col = first_detail
-
-            # 단가에는 절대 0이 들어가면 안 되므로 최소 단가를 0.01불로 보장한다.
-            MIN_UNIT = 0.01
-
-            # 첫 상세 외에 값이 있는(품명이 있거나 단가가 있던) 나머지 상세 목록
-            other_details = []
-            for dcol2, qcol2, ucol2 in detail_groups:
-                if ucol2 == unit_col:
-                    continue
-                if ali_ht_clean_text(df.at[i, dcol2]) or unit_val(i, ucol2) > 0:
-                    other_details.append((dcol2, qcol2, ucol2))
-
-            # 나머지 상세를 최소 단가(0.01)로 채울 때 들어가는 금액. 첫 상세 단가 계산 시 미리 반영.
-            reserved = ali_ht_money(sum(MIN_UNIT * qty_val(i, qcol2) for _, qcol2, ucol2 in other_details))
-
-            q = qty_val(i, qty_col)
-            old_unit = unit_val(i, unit_col)
-            # 첫 상세 단가: 목표 총액에서 나머지 최소금액을 뺀 값으로 맞추되, 0이 되지 않게 최소 0.01 보장
-            new_unit = max(MIN_UNIT, ali_ht_money((target_total - reserved) / q)) if q else MIN_UNIT
-            excel_set(i, unit_col, new_unit)
-            money_changed_cells.add((i, unit_col))
-            old_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {old_unit}")
-            new_units.append(f"{ali_ht_clean_text(df.at[i, desc_col])}: {new_unit}")
-
-            # 나머지 상세 단가는 0 대신 최소 0.01로 맞춤 (단가에 0이 들어가지 않도록)
-            for dcol2, qcol2, ucol2 in other_details:
-                ou = unit_val(i, ucol2)
-                if ou == MIN_UNIT:
-                    continue
-                excel_set(i, ucol2, MIN_UNIT)
-                money_changed_cells.add((i, ucol2))
-                old_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {ou}")
-                new_units.append(f"{ali_ht_clean_text(df.at[i, dcol2])}: {MIN_UNIT}")
-            new_total = recalc_row_total(i)
-            excel_set(i, col_total, new_total)
-            money_changed_cells.add((i, col_total))
-            modified.append(i)
-            before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(old_units)}], 총금액 {old_total}")
-            after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(new_units)}], 총금액 {new_total}")
+            old_total = total_val(i)
+            before_units, after_units = set_row_total_around(i, 10.00)
+            new_total = total_val(i)
+            if new_total != old_total:
+                modified.append(i)
+                v3_159_touched_rows.add(i)
+                before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(before_units)}], 총금액 {old_total}")
+                after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(after_units)}], 총금액 {new_total}")
         if modified:
-            add_log("배제분할", dup_idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), "V=3 동일 수취인·동일 품명·동일 금액 분할배송: 1건 원금액 유지, 나머지 1~3불대 표시(단가 0 금지, 최소 0.01불 보장)", modified[0])
+            v3_159_group_adjust_count += 1
+            v3_split_adjust_count += 1
+            add_log("V3_159이상그룹", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"V=3 동일 수취인 중 159불 이상 포함: 최고금액 HAWB {row_hawb(keep)} 1건 유지, 나머지 약 10불로 조정", modified[0])
 
-
-    # ── V=3 단일건 150~155불 → 149불 보정 ────────────────────────────────
-    # V=3 행 중 BA 총금액이 150~155불인 단일 건만 149불로 맞춘다.
-    # 단, V=3 동일 수취인·동일 품명·동일 금액 중복분할 대상 행은 제외한다.
-    # 156불 이상은 원래 규칙대로 건드리지 않는다.
-    # 차감은 상세 품목 BO(단가)가 가장 높은 것부터 진행하고, 단가는 0.01불 미만으로 떨어지지 않게 한다.
-    v3_150_adjusted_count = 0
+    # 2) V=3 개별 BA 150~158불 → 147~149불대, 149불 우선 보정
     for i in [idx for idx in df.index if ali_ht_clean_text(df.at[idx, col_v]) == "3"]:
-        if i in v3_split_touched_rows:
+        if i in v3_159_touched_rows:
             continue
         row_total = total_val(i)
-        if not (150 <= row_total <= 155):
+        if not (150 <= row_total <= 158):
             continue
-
-        target = 149.00
-        need = ali_ht_money(row_total - target)
-        if need <= 0:
-            continue
-
-        candidates = []
-        for desc_col, qty_col, unit_col in detail_groups:
-            desc = ali_ht_clean_text(df.at[i, desc_col])
-            unit = unit_val(i, unit_col)
-            qty = qty_val(i, qty_col)
-            if unit > 0 and qty > 0 and (desc or unit):
-                candidates.append((unit, unit * qty, desc_col, qty_col, unit_col, desc))
-        candidates.sort(reverse=True, key=lambda x: (x[0], x[1]))
-
-        remaining = need
-        before_lines = []
-        after_lines = []
-        modified = []
-
-        for _unit_sort, _total_sort, desc_col, qty_col, unit_col, desc in candidates:
-            if remaining <= 0:
-                break
-            q = qty_val(i, qty_col)
-            old_unit = unit_val(i, unit_col)
-            old_row_total = total_val(i)
-
-            # 이 상세품목에서 총금액 기준으로 최대 얼마까지 뺄 수 있는지 계산
-            max_reduce_total = ali_ht_money((old_unit - 0.01) * q)
-            if max_reduce_total <= 0:
-                continue
-
-            reduce_total = min(remaining, max_reduce_total)
-            reduce_unit = ali_ht_money(reduce_total / q)
-            if reduce_unit <= 0:
-                continue
-
-            new_unit = ali_ht_money(old_unit - reduce_unit)
-            if new_unit < 0.01:
-                new_unit = 0.01
-
-            excel_set(i, unit_col, new_unit)
-            money_changed_cells.add((i, unit_col))
-
-            new_row_total = recalc_row_total(i)
-            excel_set(i, col_total, new_row_total)
-            money_changed_cells.add((i, col_total))
-
-            actual_reduce = ali_ht_money(old_row_total - new_row_total)
-            if actual_reduce <= 0:
-                continue
-
-            before_lines.append(f"{row_hawb(i)} {desc} 단가 {old_unit}, 총금액 {old_row_total}")
-            after_lines.append(f"{row_hawb(i)} {desc} 단가 {new_unit}, 총금액 {new_row_total}")
-            remaining = ali_ht_money(remaining - actual_reduce)
-            modified = [i]
-
+        target = ali_ht_target_147_149(row_total)
+        modified, before_lines, after_lines = reduce_group_to_target([i], target)
         if modified:
             final_row_total = total_val(i)
             v3_150_adjusted_count += 1
             add_log(
-                "V3_150~155보정",
+                "V3_150~158보정",
                 [i],
                 modified,
                 "상세단가/BA 총금액",
                 " / ".join(before_lines),
                 " / ".join(after_lines),
-                f"V=3 단일건 {row_total}불 → {final_row_total}불 보정 (150~155만 대상, 156 이상 제외, 높은 단가부터 차감, 단가 최소 0.01불)",
+                f"V=3 단일건 {row_total}불 → {final_row_total}불 보정(150~158 대상, 147~149불대, 단가 최소 0.01불)",
                 i,
             )
     # ────────────────────────────────────────────────────────────────────────────
@@ -4877,10 +4872,10 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "V=1 대상 행": len(v1_indices),
         "150불 미만 수정제외 묶음": skipped_under_150_count,
         "분할배송 금액분할 묶음": split_groups_count,
-        "150~160불 금액보정 묶음": adjusted_150_count,
-        "160불 초과 V=3 변경 묶음": moved_to_v3_count,
-        "배제건 분할표시 묶음": v3_split_adjust_count,
-        "V3 150~155불 단일건 보정": v3_150_adjusted_count,
+        "V1 150~156불 금액보정 묶음": adjusted_150_count,
+        "V1 157불 이상 V=3 변경 묶음": moved_to_v3_count,
+        "V3 159불 이상 그룹 조정 묶음": v3_159_group_adjust_count,
+        "V3 150~158불 단일건 보정": v3_150_adjusted_count,
         "품명 변경 셀 수": name_change_count,
         "목록→배제 변경 HAWB 수": len(excluded_from_list_hawbs),
         "전체 변경/확인 로그 수": len(memo_df),
