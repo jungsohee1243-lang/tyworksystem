@@ -2,6 +2,7 @@ import io
 import os
 import re
 import string
+import math
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -2004,7 +2005,13 @@ def load_dashboard_from_github():
                 st.session_state[key] = img
     st.session_state["_gh_loaded"] = True
 
-# ── 사용자 계정 관리 (st.secrets 우선, 없으면 session_state 내장) ──
+# ── 사용자 계정 관리 ──
+# 기존 문제: st.secrets에 [users]가 있으면 load_users()가 항상 secrets만 다시 읽어서
+# 관리자 화면에서 계정 생성/비밀번호 변경을 해도 저장값이 반영되지 않았습니다.
+# 아래 방식은 최초 1회만 secrets/default 계정을 users.json으로 가져오고,
+# 이후 변경사항은 users.json에 저장해서 계속 반영되게 합니다.
+USERS_DB_FILE = "users.json"
+
 def _default_users():
     return {
         "admin": {"password": "admin2024!", "role": "admin"},
@@ -2012,12 +2019,10 @@ def _default_users():
         "yst":   {"password": "yst1234",    "role": "user"},
     }
 
-def load_users():
-    """secrets에 [users] 섹션이 있으면 그걸 쓰고, 없으면 session_state 내장 계정 사용."""
+def _users_from_secrets():
     try:
         raw = dict(_secret_get("users", {}))
         if raw:
-            # secrets 형식: admin = "admin2024!|admin"  또는  admin = "admin2024!"
             users = {}
             for k, v in raw.items():
                 parts = str(v).split("|")
@@ -2025,13 +2030,33 @@ def load_users():
             return users
     except Exception:
         pass
-    if "users_db" not in st.session_state:
-        st.session_state.users_db = _default_users()
+    return None
+
+def load_users():
+    """users.json을 우선 읽고, 없으면 secrets/default 계정으로 최초 생성합니다."""
+    import json
+
+    if "users_db" in st.session_state:
+        return st.session_state.users_db
+
+    if os.path.exists(USERS_DB_FILE):
+        try:
+            with open(USERS_DB_FILE, "r", encoding="utf-8") as f:
+                st.session_state.users_db = json.load(f)
+                return st.session_state.users_db
+        except Exception:
+            pass
+
+    st.session_state.users_db = _users_from_secrets() or _default_users()
+    save_users(st.session_state.users_db)
     return st.session_state.users_db
 
 def save_users(users_dict):
-    """session_state에 저장 (secrets 미사용 환경용)."""
+    """계정 정보를 session_state와 users.json에 같이 저장합니다."""
+    import json
     st.session_state.users_db = users_dict
+    with open(USERS_DB_FILE, "w", encoding="utf-8") as f:
+        json.dump(users_dict, f, ensure_ascii=False, indent=2)
 
 def check_login(user, pw):
     users = load_users()
@@ -4547,8 +4572,9 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             if not after:
                 has_dried = re.search(r"\bdried\b", before, flags=re.I) is not None
                 has_snack = re.search(r"\bsnack\b", before, flags=re.I) is not None
+                has_skin_care = re.search(r"skin\s*care", before, flags=re.I) is not None
                 already_seasoned_dried = re.search(r"\bseasoned\s+dried\b", before, flags=re.I) is not None
-                if has_dried and not has_snack and not already_seasoned_dried:
+                if has_dried and not has_snack and not has_skin_care and not already_seasoned_dried:
                     after = re.sub(r"\bDried\b", "Seasoned Dried", before, count=1, flags=re.I)
 
             if after and before != after:
@@ -4585,6 +4611,46 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     # - 목표금액은 147~149불대 중 원금액에 가장 가까운 149불 우선
     # ────────────────────────────────────────────────────────────────────────────
     MIN_UNIT = 0.01
+
+    # BO(단가)가 0인 품목 자동 보정
+    # - 단가가 0이면 수량 기준으로 총금액이 최소 1달러가 되도록 단가 산정
+    # - 산정 단가가 0.01보다 작으면 0.01 적용
+    # - BA(총금액)는 BO × BK 기준으로 재계산
+    bo_zero_fix_count = 0
+    for i in df.index:
+        for desc_col, qty_col, unit_col in detail_groups:
+            desc = ali_ht_clean_text(df.at[i, desc_col])
+            old_unit = unit_val(i, unit_col)
+            qty = qty_val(i, qty_col)
+
+            # 빈 상세품목 칸은 건드리지 않고, 실제 품명이 있는 BO=0 건만 보정
+            if not desc or old_unit != 0 or qty <= 0:
+                continue
+
+            before_unit = df.at[i, unit_col]
+            before_total = df.at[i, col_total]
+
+            # 총금액 1달러 이상이 되도록 1/수량을 센트 단위로 올림 처리
+            new_unit = max(MIN_UNIT, math.ceil((1.0 / qty) * 100) / 100)
+            new_unit = ali_ht_money(new_unit)
+            new_total = ali_ht_money(new_unit * qty)
+
+            excel_set(i, unit_col, new_unit)
+            money_changed_cells.add((i, unit_col))
+            excel_set(i, col_total, new_total)
+            money_changed_cells.add((i, col_total))
+            bo_zero_fix_count += 1
+
+            add_log(
+                "BO=0 자동보정",
+                [i],
+                [i],
+                "BO 단가/BA 총금액",
+                f"단가 {before_unit}, 총금액 {before_total}",
+                f"단가 {new_unit}, 총금액 {new_total}",
+                "BO 단가 0 → 수량 기준 최소 총금액 1달러 이상으로 자동 보정",
+                i,
+            )
 
     def ali_ht_target_147_149(current_total):
         """원금액을 너무 많이 줄이지 않기 위해 149불을 우선 목표로 사용."""
