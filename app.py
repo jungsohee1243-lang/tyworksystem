@@ -2,7 +2,6 @@ import io
 import os
 import re
 import string
-import math
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
@@ -2005,13 +2004,7 @@ def load_dashboard_from_github():
                 st.session_state[key] = img
     st.session_state["_gh_loaded"] = True
 
-# ── 사용자 계정 관리 ──
-# 기존 문제: st.secrets에 [users]가 있으면 load_users()가 항상 secrets만 다시 읽어서
-# 관리자 화면에서 계정 생성/비밀번호 변경을 해도 저장값이 반영되지 않았습니다.
-# 아래 방식은 최초 1회만 secrets/default 계정을 users.json으로 가져오고,
-# 이후 변경사항은 users.json에 저장해서 계속 반영되게 합니다.
-USERS_DB_FILE = "users.json"
-
+# ── 사용자 계정 관리 (st.secrets 우선, 없으면 session_state 내장) ──
 def _default_users():
     return {
         "admin": {"password": "admin2024!", "role": "admin"},
@@ -2019,10 +2012,12 @@ def _default_users():
         "yst":   {"password": "yst1234",    "role": "user"},
     }
 
-def _users_from_secrets():
+def load_users():
+    """secrets에 [users] 섹션이 있으면 그걸 쓰고, 없으면 session_state 내장 계정 사용."""
     try:
         raw = dict(_secret_get("users", {}))
         if raw:
+            # secrets 형식: admin = "admin2024!|admin"  또는  admin = "admin2024!"
             users = {}
             for k, v in raw.items():
                 parts = str(v).split("|")
@@ -2030,33 +2025,13 @@ def _users_from_secrets():
             return users
     except Exception:
         pass
-    return None
-
-def load_users():
-    """users.json을 우선 읽고, 없으면 secrets/default 계정으로 최초 생성합니다."""
-    import json
-
-    if "users_db" in st.session_state:
-        return st.session_state.users_db
-
-    if os.path.exists(USERS_DB_FILE):
-        try:
-            with open(USERS_DB_FILE, "r", encoding="utf-8") as f:
-                st.session_state.users_db = json.load(f)
-                return st.session_state.users_db
-        except Exception:
-            pass
-
-    st.session_state.users_db = _users_from_secrets() or _default_users()
-    save_users(st.session_state.users_db)
+    if "users_db" not in st.session_state:
+        st.session_state.users_db = _default_users()
     return st.session_state.users_db
 
 def save_users(users_dict):
-    """계정 정보를 session_state와 users.json에 같이 저장합니다."""
-    import json
+    """session_state에 저장 (secrets 미사용 환경용)."""
     st.session_state.users_db = users_dict
-    with open(USERS_DB_FILE, "w", encoding="utf-8") as f:
-        json.dump(users_dict, f, ensure_ascii=False, indent=2)
 
 def check_login(user, pw):
     users = load_users()
@@ -4086,6 +4061,22 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     col_hawb  = meni_find_column_name(df.columns, "HAWB NO")
     col_tel   = meni_find_column_name(df.columns, "C/TEL")
     col_total = meni_find_column_name(df.columns, "总金额")
+    try:
+        col_name = meni_find_column_name(df.columns, "C/NAME", startswith=True)
+    except Exception:
+        col_name = meni_find_column_name(df.columns, "수취인") if any("수취인" in str(c) for c in df.columns) else None
+
+    # DESCRIPTION 반복 구조: 8개 열이 한 세트이며 DESCRIPTION +2=QTY, +6=INVOICE VALUE
+    meni_detail_groups = []
+    meni_cols = list(df.columns)
+    for _idx, _col in enumerate(meni_cols):
+        _norm = re.sub(r"\s+", "", str(_col)).upper()
+        if "DESCRIPTION" in _norm and "ITEMREMARK" not in _norm:
+            _qidx, _uidx = _idx + 2, _idx + 6
+            if _qidx < len(meni_cols) and _uidx < len(meni_cols):
+                _qcol, _ucol = meni_cols[_qidx], meni_cols[_uidx]
+                if "QTY" in re.sub(r"\s+", "", str(_qcol)).upper() and ("INVOICE" in re.sub(r"\s+", "", str(_ucol)).upper() or "VALUE" in re.sub(r"\s+", "", str(_ucol)).upper()):
+                    meni_detail_groups.append((_col, _qcol, _ucol))
 
     w_orig = pd.to_numeric(df[col_af], errors="coerce")
     count_le2_orig = int(((w_orig <= 2) & w_orig.notna()).sum())
@@ -4155,20 +4146,203 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     w_after = pd.to_numeric(df[col_af], errors="coerce")
     count_le2_after = int(((w_after <= 2) & w_after.notna()).sum())
 
-    tel = df[col_tel].astype(str).str.strip()
-    v_str = df[col_v].astype(str).str.strip()
-    amt = pd.to_numeric(df[col_total], errors="coerce")
+    # ── HT와 동일한 금액 후처리 규칙 ──────────────────────────────────────────
+    # 같은 화주 = 같은 수취인 + 전화번호
+    MENI_MIN_UNIT = 0.01
+    meni_money_cells = set()
+    rows_v_orange = []
+    processed_hawbs = []
+    meni_v1_adjusted_groups = 0
+    meni_v1_to_v3_groups = 0
+    meni_split_groups = 0
+    meni_v3_150_adjusted = 0
+    meni_v3_group_adjusted = 0
 
-    mask_v1 = (v_str == "1") & tel.notna() & (tel != "")
-    df_v1 = pd.DataFrame({"TEL": tel.where(mask_v1), "AMT": amt.where(mask_v1)})
-    tel_sum = df_v1.groupby("TEL", dropna=True)["AMT"].sum()
-    bad_tels = set(tel_sum[tel_sum >= 150].index.tolist())
+    def _mclean(v):
+        return "" if pd.isna(v) else str(v).strip()
 
-    mask_phone_rule = mask_v1 & tel.isin(bad_tels)
-    rows_v_orange = df.index[mask_phone_rule].tolist()
-    df.loc[mask_phone_rule, col_v] = "3"
-    hawb_list = df.loc[mask_phone_rule, col_hawb].astype(str).tolist()
+    def _mnum(v):
+        try:
+            return round(float(str(v).replace(",", "").strip()), 2)
+        except Exception:
+            return 0.0
 
+    def _mname(i):
+        return _mclean(df.at[i, col_name]) if col_name is not None else ""
+
+    def _mtel(i):
+        return _mclean(df.at[i, col_tel])
+
+    def _mkey(i):
+        return (_mname(i), _mtel(i))
+
+    def _mtotal(i):
+        return _mnum(df.at[i, col_total])
+
+    def _mqty(i, qcol):
+        q = _mnum(df.at[i, qcol])
+        return q if q else 1.0
+
+    def _munit(i, ucol):
+        return _mnum(df.at[i, ucol])
+
+    def _msig(i):
+        return tuple(_mclean(df.at[i, dcol]).upper() for dcol, _q, _u in meni_detail_groups if _mclean(df.at[i, dcol]))
+
+    def _mrecalc(i):
+        if not meni_detail_groups:
+            return _mtotal(i)
+        total = 0.0
+        for dcol, qcol, ucol in meni_detail_groups:
+            desc = _mclean(df.at[i, dcol])
+            unit = _munit(i, ucol)
+            if desc or unit:
+                total += unit * _mqty(i, qcol)
+        return round(total, 2)
+
+    def _mset(i, col, value):
+        df.at[i, col] = value
+        meni_money_cells.add((i, col))
+
+    def _mreduce_group(idxs, target=143.00):
+        remaining = round(sum(_mtotal(i) for i in idxs) - target, 2)
+        if remaining <= 0 or not meni_detail_groups:
+            return []
+        modified = []
+        guard = 0
+        while remaining > 0 and guard < 30:
+            guard += 1
+            candidates = []
+            for i in idxs:
+                for dcol, qcol, ucol in meni_detail_groups:
+                    unit, qty = _munit(i, ucol), _mqty(i, qcol)
+                    if unit > MENI_MIN_UNIT and qty > 0 and (_mclean(df.at[i, dcol]) or unit):
+                        candidates.append((unit, unit * qty, i, qcol, ucol))
+            candidates.sort(reverse=True)
+            if not candidates:
+                break
+            progressed = False
+            for _unit_sort, _row_sort, i, qcol, ucol in candidates:
+                if remaining <= 0:
+                    break
+                old_unit, qty, old_total = _munit(i, ucol), _mqty(i, qcol), _mtotal(i)
+                max_reduce = max(0.0, old_unit - MENI_MIN_UNIT)
+                reduce_unit = min(max_reduce, round(remaining / qty, 2))
+                if reduce_unit <= 0:
+                    continue
+                new_unit = max(MENI_MIN_UNIT, round(old_unit - reduce_unit, 2))
+                if new_unit == old_unit:
+                    continue
+                _mset(i, ucol, new_unit)
+                new_total = _mrecalc(i)
+                _mset(i, col_total, new_total)
+                actual = round(old_total - new_total, 2)
+                if actual > 0:
+                    remaining = round(remaining - actual, 2)
+                    modified.append(i)
+                    progressed = True
+            if not progressed:
+                break
+        return list(dict.fromkeys(modified))
+
+    def _mset_row_around_10(i):
+        if not meni_detail_groups:
+            return False
+        details = []
+        for dcol, qcol, ucol in meni_detail_groups:
+            desc, unit, qty = _mclean(df.at[i, dcol]), _munit(i, ucol), _mqty(i, qcol)
+            if qty > 0 and (desc or unit > 0):
+                details.append((unit, dcol, qcol, ucol, qty))
+        if not details:
+            return False
+        details.sort(reverse=True)
+        old_total = _mtotal(i)
+        reserved = round(sum(MENI_MIN_UNIT * x[4] for x in details[1:]), 2)
+        _u, _dcol, _qcol, main_ucol, main_qty = details[0]
+        _mset(i, main_ucol, max(MENI_MIN_UNIT, round((10.00 - reserved) / main_qty, 2)))
+        for _u2, _d2, _q2, ucol2, _qty2 in details[1:]:
+            _mset(i, ucol2, MENI_MIN_UNIT)
+        _mset(i, col_total, _mrecalc(i))
+        return _mtotal(i) != old_total
+
+    # 목록건(V=1): 150~160 → 140~143 범위 중 143불로 우선 조정
+    v1_idxs = [i for i in df.index if _mclean(df.at[i, col_v]) == "1"]
+    v1_groups = {}
+    for i in v1_idxs:
+        v1_groups.setdefault(_mkey(i), []).append(i)
+
+    for _key, idxs in v1_groups.items():
+        group_total = round(sum(_mtotal(i) for i in idxs), 2)
+        if 150 <= group_total <= 160:
+            modified = _mreduce_group(idxs, 143.00)
+            if modified:
+                meni_v1_adjusted_groups += 1
+                processed_hawbs.extend(_mclean(df.at[i, col_hawb]) for i in idxs)
+
+        # 1번 작업 후에도 같은 화주 합산이 150불 이상이면 배제(V=3)
+        final_total = round(sum(_mtotal(i) for i in idxs), 2)
+        if final_total >= 150:
+            changed = []
+            for i in idxs:
+                if _mclean(df.at[i, col_v]) != "3":
+                    df.at[i, col_v] = "3"
+                    changed.append(i)
+            if changed:
+                meni_v1_to_v3_groups += 1
+                rows_v_orange.extend(changed)
+                processed_hawbs.extend(_mclean(df.at[i, col_hawb]) for i in idxs)
+
+        # 같은 화주 + 같은 품명 + 같은 금액이면 금액을 건수대로 분할
+        dup = {}
+        for i in idxs:
+            sig, amt_i = _msig(i), _mtotal(i)
+            if sig and amt_i > 0:
+                dup.setdefault((sig, amt_i), []).append(i)
+        for (_sig, _amt), dups in dup.items():
+            if len(dups) < 2 or not meni_detail_groups:
+                continue
+            n = len(dups)
+            changed_any = False
+            for i in dups:
+                old_total = _mtotal(i)
+                for dcol, qcol, ucol in meni_detail_groups:
+                    if not _mclean(df.at[i, dcol]):
+                        continue
+                    old_unit = _munit(i, ucol)
+                    if old_unit > 0:
+                        _mset(i, ucol, max(MENI_MIN_UNIT, round(old_unit / n, 2)))
+                _mset(i, col_total, _mrecalc(i))
+                changed_any = changed_any or (_mtotal(i) != old_total)
+            if changed_any:
+                meni_split_groups += 1
+                processed_hawbs.extend(_mclean(df.at[i, col_hawb]) for i in dups)
+
+    # 간이건(V=3): 먼저 개별 150~160 → 143불 조정
+    for i in [x for x in df.index if _mclean(df.at[x, col_v]) == "3"]:
+        if 150 <= _mtotal(i) <= 160:
+            if _mreduce_group([i], 143.00):
+                meni_v3_150_adjusted += 1
+                processed_hawbs.append(_mclean(df.at[i, col_hawb]))
+
+    # 위 작업 이후에도 150불 이상 건이 포함된 같은 화주 그룹은 최고금액 1건 유지, 나머지 약 10불
+    v3_groups = {}
+    for i in [x for x in df.index if _mclean(df.at[x, col_v]) == "3"]:
+        v3_groups.setdefault(_mkey(i), []).append(i)
+    for _key, idxs in v3_groups.items():
+        if not any(_mtotal(i) >= 150 for i in idxs):
+            continue
+        keep = max(idxs, key=_mtotal)
+        modified = []
+        for i in idxs:
+            if i != keep and _mset_row_around_10(i):
+                modified.append(i)
+        if modified:
+            meni_v3_group_adjusted += 1
+            processed_hawbs.extend(_mclean(df.at[i, col_hawb]) for i in idxs)
+
+    rows_v_orange = list(dict.fromkeys(rows_v_orange))
+    hawb_list = list(dict.fromkeys(h for h in processed_hawbs if h))
+    bad_tels = {_mtel(i) for i in rows_v_orange if _mtel(i)}
     v_after_str = df[col_v].astype(str).str.strip()
     hs_str = df[col_hs].astype(str).str.strip()
     amt_after = pd.to_numeric(df[col_total], errors="coerce")
@@ -4231,11 +4405,11 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         memo["A6"] = "WIRELESS 변경 건수(V=1→3)"
         memo["B6"] = wireless_changed_cnt
 
-        memo["A7"] = "전화번호 중복 + 총금액합계≥150 행 수"
+        memo["A7"] = "합산 규칙 처리/배제 변경 행 수"
         memo["B7"] = len(rows_v_orange)
 
-        memo["A8"] = "해당 전화번호 수"
-        memo["B8"] = len(bad_tels)
+        memo["A8"] = "해당 수취인+전화번호 그룹 수"
+        memo["B8"] = meni_v1_to_v3_groups
 
         memo["A9"] = "WIRELESS 전체 대비 변경 비율(%)"
         memo["B9"] = round(wireless_ratio_all, 2)
@@ -4262,7 +4436,12 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         "WIRELESS 변경": wireless_changed_cnt,
         "키워드 V변경": len(rows_v_red),
         "중량 1차 재분배": len(t_idx),
-        "전화번호/총금액 변경": len(rows_v_orange),
+        "V1 150~160→143 보정 그룹": meni_v1_adjusted_groups,
+        "V1 합산 150↑ 배제 그룹": meni_v1_to_v3_groups,
+        "동일 품명·금액 분할 그룹": meni_split_groups,
+        "V3 150~160→143 보정": meni_v3_150_adjusted,
+        "V3 150↑ 포함 그룹 조정": meni_v3_group_adjusted,
+        "합산 처리 송장 수": len(hawb_list),
         "FTA 적용건": len(fta_hawb_list),
     }
 
@@ -4448,6 +4627,17 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             raise ValueError("상세 품명/QTY/INVOICE VALUE 반복 컬럼을 찾지 못했습니다.")
         detail_groups = [(desc_col, qty_col, unit_col)]
 
+    # 첫 번째 품목(BI~BP)은 제외하고, 두 번째 DESCRIPTION(BQ)부터 영문이 없는 품명을 품명오류로 분리
+    description_error_indices = []
+    if len(detail_groups) > 1:
+        for _i in df.index:
+            for _desc_col, _qcol, _ucol in detail_groups[1:]:
+                _desc = ali_ht_clean_text(df.at[_i, _desc_col])
+                if _desc and re.search(r"[A-Za-z]", _desc) is None:
+                    description_error_indices.append(_i)
+                    break
+    description_error_indices = list(dict.fromkeys(description_error_indices))
+
     logs = []
     money_changed_cells = set()
     v_changed_cells = set()
@@ -4572,9 +4762,8 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             if not after:
                 has_dried = re.search(r"\bdried\b", before, flags=re.I) is not None
                 has_snack = re.search(r"\bsnack\b", before, flags=re.I) is not None
-                has_skin_care = re.search(r"skin\s*care", before, flags=re.I) is not None
                 already_seasoned_dried = re.search(r"\bseasoned\s+dried\b", before, flags=re.I) is not None
-                if has_dried and not has_snack and not has_skin_care and not already_seasoned_dried:
+                if has_dried and not has_snack and not already_seasoned_dried:
                     after = re.sub(r"\bDried\b", "Seasoned Dried", before, count=1, flags=re.I)
 
             if after and before != after:
@@ -4608,53 +4797,13 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     # - BA(총금액)를 기준으로 대상 판단
     # - BO(단가)를 조정한 뒤 BA를 재계산
     # - 단가는 0.01불 미만으로 내려가지 않도록 보호
-    # - 목표금액은 147~149불대 중 원금액에 가장 가까운 149불 우선
+    # - 목표금액은 140~143불 범위 중 원금액 감소가 가장 적은 143불 우선
     # ────────────────────────────────────────────────────────────────────────────
     MIN_UNIT = 0.01
 
-    # BO(단가)가 0인 품목 자동 보정
-    # - 단가가 0이면 수량 기준으로 총금액이 최소 1달러가 되도록 단가 산정
-    # - 산정 단가가 0.01보다 작으면 0.01 적용
-    # - BA(총금액)는 BO × BK 기준으로 재계산
-    bo_zero_fix_count = 0
-    for i in df.index:
-        for desc_col, qty_col, unit_col in detail_groups:
-            desc = ali_ht_clean_text(df.at[i, desc_col])
-            old_unit = unit_val(i, unit_col)
-            qty = qty_val(i, qty_col)
-
-            # 빈 상세품목 칸은 건드리지 않고, 실제 품명이 있는 BO=0 건만 보정
-            if not desc or old_unit != 0 or qty <= 0:
-                continue
-
-            before_unit = df.at[i, unit_col]
-            before_total = df.at[i, col_total]
-
-            # 총금액 1달러 이상이 되도록 1/수량을 센트 단위로 올림 처리
-            new_unit = max(MIN_UNIT, math.ceil((1.0 / qty) * 100) / 100)
-            new_unit = ali_ht_money(new_unit)
-            new_total = ali_ht_money(new_unit * qty)
-
-            excel_set(i, unit_col, new_unit)
-            money_changed_cells.add((i, unit_col))
-            excel_set(i, col_total, new_total)
-            money_changed_cells.add((i, col_total))
-            bo_zero_fix_count += 1
-
-            add_log(
-                "BO=0 자동보정",
-                [i],
-                [i],
-                "BO 단가/BA 총금액",
-                f"단가 {before_unit}, 총금액 {before_total}",
-                f"단가 {new_unit}, 총금액 {new_total}",
-                "BO 단가 0 → 수량 기준 최소 총금액 1달러 이상으로 자동 보정",
-                i,
-            )
-
-    def ali_ht_target_147_149(current_total):
-        """원금액을 너무 많이 줄이지 않기 위해 149불을 우선 목표로 사용."""
-        return 149.00 if current_total >= 149 else ali_ht_money(current_total)
+    def ali_ht_target_140_143(current_total):
+        """140~143불 범위 중 원금액을 가장 적게 줄이는 143불을 우선 목표로 사용."""
+        return 143.00 if current_total >= 143 else ali_ht_money(current_total)
 
     def get_money_candidates(idxs):
         candidates = []
@@ -4794,27 +4943,50 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     skipped_under_150_count = 0
 
     for key, idxs in groups.items():
-        # 1) 같은 화주 + 같은 품명 + 같은 금액이면 금액을 건수대로 나눠 신고
-        #    (BA 총금액 및 BO 단가 모두 나눔)
+        group_total = ali_ht_money(sum(total_val(i) for i in idxs))
+        if group_total < 150:
+            skipped_under_150_count += 1
+
+        # 1) 같은 화주 합계 150~160불 → 140~143불 범위 중 143불 우선 보정
+        if 150 <= group_total <= 160:
+            target = ali_ht_target_140_143(group_total)
+            modified, before_lines, after_lines = reduce_group_to_target(idxs, target)
+            if modified:
+                adjusted_150_count += 1
+                final_total = ali_ht_money(sum(total_val(i) for i in idxs))
+                add_log("목록150~160보정", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"V=1 같은 수취인+전화번호 합계 {group_total}불 → {final_total}불 보정(140~143불 범위, 143불 우선, 단가 최소 0.01불)", modified[0])
+
+        # 2) 1번 작업 후에도 같은 화주 합산금액이 150불 이상이면 V=3 배제
+        final_total = ali_ht_money(sum(total_val(i) for i in idxs))
+        if final_total >= 150:
+            modified = []
+            for i in idxs:
+                before = df.at[i, col_v]
+                if ali_ht_clean_text(before) != "3":
+                    excel_set(i, col_v, "3")
+                    v_changed_cells.add((i, col_v))
+                    excluded_from_list_hawbs.append(row_hawb(i))
+                    modified.append(i)
+            if modified:
+                moved_to_v3_count += 1
+                add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"1차 보정 후 같은 수취인+전화번호 합계 {final_total}불로 150불 이상, V=3 배제 처리", modified[0])
+
+        # 3) 같은 화주 + 같은 품명 + 같은 금액이면 금액을 건수대로 나눠 신고
         dup_map = {}
         for i in idxs:
             sig = detail_signature(i)
             amt = total_val(i)
             if amt > 0 and sig:
                 dup_map.setdefault((sig, amt), []).append(i)
-
         for (_sig, amt), dup_idxs in dup_map.items():
             if len(dup_idxs) < 2:
                 continue
             split_groups_count += 1
             n = len(dup_idxs)
-            modified = []
-            before_lines = []
-            after_lines = []
+            modified, before_lines, after_lines = [], [], []
             for i in dup_idxs:
                 row_before_total = total_val(i)
-                before_units = []
-                after_units = []
+                before_units, after_units = [], []
                 for desc_col, qty_col, unit_col in detail_groups:
                     desc = ali_ht_clean_text(df.at[i, desc_col])
                     if not desc:
@@ -4837,58 +5009,33 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                     before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(before_units)}], 총금액 {row_before_total}")
                     after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(after_units)}], 총금액 {new_total}")
             if modified:
-                add_log("목록분할", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"동일 수취인·동일 품명·동일 금액 {n}건 분할배송 처리", dup_idxs[0])
-
-        group_total = ali_ht_money(sum(total_val(i) for i in idxs))
-
-        if group_total < 150:
-            skipped_under_150_count += 1
-            continue
-
-        # 2) 같은 화주 합계 150~156불 → 147~149불대, 149불 우선 보정
-        if 150 <= group_total <= 156:
-            target = ali_ht_target_147_149(group_total)
-            modified, before_lines, after_lines = reduce_group_to_target(idxs, target)
-            if modified:
-                adjusted_150_count += 1
-                final_total = ali_ht_money(sum(total_val(i) for i in idxs))
-                add_log("목록150~156보정", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"V=1 수취인별 합계 {group_total}불 → {final_total}불 보정(147~149불대, 단가 최소 0.01불)", modified[0])
-
-        # 3) 보정 후에도 157불 이상이면 V=3 배제 처리
-        final_total = ali_ht_money(sum(total_val(i) for i in idxs))
-        if final_total >= 157:
-            moved_to_v3_count += 1
-            modified = []
-            for i in idxs:
-                before = df.at[i, col_v]
-                if ali_ht_clean_text(before) != "3":
-                    excel_set(i, col_v, "3")
-                    v_changed_cells.add((i, col_v))
-                    hawb = row_hawb(i)
-                    excluded_from_list_hawbs.append(hawb)
-                    modified.append(i)
-            if modified:
-                add_log("목록→배제", idxs, modified, "V 용도구분", "1", "3", f"V=1 수취인별 합계 {final_total}불로 157불 이상, V=3 배제 처리", modified[0])
+                add_log("목록분할", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"동일 수취인·전화번호·품명·금액 {n}건 분할배송 처리", dup_idxs[0])
 
     # V=3 간이/배제건 처리
-    v3_indices = [i for i in df.index if ali_ht_clean_text(df.at[i, col_v]) == "3"]
-    v3_groups = {}
-    for i in v3_indices:
-        v3_groups.setdefault(group_key(i), []).append(i)
-
-    v3_split_adjust_count = 0
     v3_150_adjusted_count = 0
-    v3_159_group_adjust_count = 0
-    v3_159_touched_rows = set()
+    v3_150_group_adjust_count = 0
 
-    # 1) 같은 화주 중 159불 이상 건이 있으면, 제일 높은 금액 1건만 유지하고 나머지는 약 10불로 변경
+    # 1) 개별 150~160불 건을 먼저 140~143불 범위(143불 우선)로 조정
+    for i in [idx for idx in df.index if ali_ht_clean_text(df.at[idx, col_v]) == "3"]:
+        row_total = total_val(i)
+        if not (150 <= row_total <= 160):
+            continue
+        target = ali_ht_target_140_143(row_total)
+        modified, before_lines, after_lines = reduce_group_to_target([i], target)
+        if modified:
+            final_row_total = total_val(i)
+            v3_150_adjusted_count += 1
+            add_log("V3_150~160보정", [i], modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"V=3 단일건 {row_total}불 → {final_row_total}불 보정(140~143불 범위, 143불 우선)", i)
+
+    # 2) 위 작업 후에도 150불 이상 건이 포함된 같은 화주 그룹은 최고금액 1건 유지, 나머지 약 10불
+    v3_groups = {}
+    for i in [idx for idx in df.index if ali_ht_clean_text(df.at[idx, col_v]) == "3"]:
+        v3_groups.setdefault(group_key(i), []).append(i)
     for key, idxs in v3_groups.items():
-        if not any(total_val(i) >= 159 for i in idxs):
+        if not any(total_val(i) >= 150 for i in idxs):
             continue
         keep = max(idxs, key=lambda x: total_val(x))
-        modified = []
-        before_lines = []
-        after_lines = []
+        modified, before_lines, after_lines = [], [], []
         for i in idxs:
             if i == keep:
                 continue
@@ -4897,36 +5044,11 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             new_total = total_val(i)
             if new_total != old_total:
                 modified.append(i)
-                v3_159_touched_rows.add(i)
                 before_lines.append(f"{row_hawb(i)} 단가[{'; '.join(before_units)}], 총금액 {old_total}")
                 after_lines.append(f"{row_hawb(i)} 단가[{'; '.join(after_units)}], 총금액 {new_total}")
         if modified:
-            v3_159_group_adjust_count += 1
-            v3_split_adjust_count += 1
-            add_log("V3_159이상그룹", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"V=3 동일 수취인 중 159불 이상 포함: 최고금액 HAWB {row_hawb(keep)} 1건 유지, 나머지 약 10불로 조정", modified[0])
-
-    # 2) V=3 개별 BA 150~158불 → 147~149불대, 149불 우선 보정
-    for i in [idx for idx in df.index if ali_ht_clean_text(df.at[idx, col_v]) == "3"]:
-        if i in v3_159_touched_rows:
-            continue
-        row_total = total_val(i)
-        if not (150 <= row_total <= 158):
-            continue
-        target = ali_ht_target_147_149(row_total)
-        modified, before_lines, after_lines = reduce_group_to_target([i], target)
-        if modified:
-            final_row_total = total_val(i)
-            v3_150_adjusted_count += 1
-            add_log(
-                "V3_150~158보정",
-                [i],
-                modified,
-                "상세단가/BA 총금액",
-                " / ".join(before_lines),
-                " / ".join(after_lines),
-                f"V=3 단일건 {row_total}불 → {final_row_total}불 보정(150~158 대상, 147~149불대, 단가 최소 0.01불)",
-                i,
-            )
+            v3_150_group_adjust_count += 1
+            add_log("V3_150이상그룹", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"1차 보정 후 V=3 동일 수취인+전화번호 그룹에 150불 이상 건 포함: 최고금액 HAWB {row_hawb(keep)} 1건 유지, 나머지 약 10불로 조정", modified[0])
     # ────────────────────────────────────────────────────────────────────────────
 
     memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유"]
@@ -4938,11 +5060,12 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "V=1 대상 행": len(v1_indices),
         "150불 미만 수정제외 묶음": skipped_under_150_count,
         "분할배송 금액분할 묶음": split_groups_count,
-        "V1 150~156불 금액보정 묶음": adjusted_150_count,
-        "V1 157불 이상 V=3 변경 묶음": moved_to_v3_count,
-        "V3 159불 이상 그룹 조정 묶음": v3_159_group_adjust_count,
-        "V3 150~158불 단일건 보정": v3_150_adjusted_count,
+        "V1 150~160불→143 보정 묶음": adjusted_150_count,
+        "V1 보정 후 150불 이상 V=3 묶음": moved_to_v3_count,
+        "V3 150~160불→143 단일건 보정": v3_150_adjusted_count,
+        "V3 보정 후 150불 이상 포함 그룹 조정": v3_150_group_adjust_count,
         "품명 변경 셀 수": name_change_count,
+        "품명오류 송장 수": len(description_error_indices),
         "목록→배제 변경 HAWB 수": len(excluded_from_list_hawbs),
         "전체 변경/확인 로그 수": len(memo_df),
     }
@@ -4966,7 +5089,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         ws.cell(row=i + 2, column=col_pos[col]).fill = desc_fill
 
     # 메모/목록배제송장 시트만 새로 생성. 원본 시트 서식은 건드리지 않음.
-    for sheet_name in ["메모", "목록배제송장"]:
+    for sheet_name in ["메모", "목록배제송장", "품명오류"]:
         if sheet_name in wb.sheetnames:
             del wb[sheet_name]
 
@@ -4987,6 +5110,18 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     }
     for col_letter, width in widths.items():
         memo_ws.column_dimensions[col_letter].width = width
+
+    if description_error_indices:
+        err_ws = wb.create_sheet("품명오류")
+        for c_idx, cell in enumerate(ws[1], start=1):
+            err_ws.cell(row=1, column=c_idx).value = cell.value
+        for out_row, src_i in enumerate(description_error_indices, start=2):
+            src_row = src_i + 2
+            for c_idx in range(1, ws.max_column + 1):
+                err_ws.cell(row=out_row, column=c_idx).value = ws.cell(row=src_row, column=c_idx).value
+        err_ws.freeze_panes = "A2"
+        for cell in err_ws[1]:
+            cell.font = cell.font.copy(bold=True)
 
     if not excluded_df.empty:
         ex_ws = wb.create_sheet("목록배제송장")
@@ -5015,7 +5150,7 @@ def ali_ht_convert_page():
     )
 
     uploaded = st.file_uploader("알리 HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file")
-    st.caption("기준: 원본 전체를 기준으로 분할배송 금액 조정, 150~160불 보정, V=3 단일건 150~155불→149불 보정, 보정 후 최종 합계 150불 이상 V=3 변경, HS CODE 정리 후 메모 시트를 생성합니다.")
+    st.caption("기준: 같은 수취인+전화번호 합산 150~160불은 143불 우선 보정, 보정 후 150불 이상은 V=3 변경, V=3도 150~160불 보정 후 150불 이상 포함 그룹을 조정하며, 2번째 품목부터 영문 없는 품명은 품명오류 시트로 분리합니다.")
 
     if uploaded:
         if st.button("✅ 알리 HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run"):
