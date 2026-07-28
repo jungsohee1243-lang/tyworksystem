@@ -4152,6 +4152,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     meni_money_cells = set()
     rows_v_orange = []
     processed_hawbs = []
+    excluded_hawbs = []  # 목록(V=1)에서 실제 배제(V=3)로 변경된 HAWB만 별도 기록
     meni_v1_adjusted_groups = 0
     meni_v1_to_v3_groups = 0
     meni_split_groups = 0
@@ -4290,6 +4291,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
             if changed:
                 meni_v1_to_v3_groups += 1
                 rows_v_orange.extend(changed)
+                excluded_hawbs.extend(_mclean(df.at[i, col_hawb]) for i in changed)
                 processed_hawbs.extend(_mclean(df.at[i, col_hawb]) for i in idxs)
 
         # 같은 화주 + 같은 품명 + 같은 금액이면 금액을 건수대로 분할
@@ -4342,6 +4344,18 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
 
     rows_v_orange = list(dict.fromkeys(rows_v_orange))
     hawb_list = list(dict.fromkeys(h for h in processed_hawbs if h))
+    excluded_hawb_list = list(dict.fromkeys(h for h in excluded_hawbs if h))
+
+    # 단가가 변경된 모든 행은 반드시 '단가 × 수량'으로 총금액을 다시 계산하여 입력합니다.
+    # 총금액 셀이 원래 비어 있더라도 변경 후에는 값이 남도록 보정합니다.
+    changed_unit_rows = {
+        i for i, col in meni_money_cells
+        if any(col == ucol for _dcol, _qcol, ucol in meni_detail_groups)
+    }
+    for i in changed_unit_rows:
+        df.at[i, col_total] = _mrecalc(i)
+        meni_money_cells.add((i, col_total))
+
     bad_tels = {_mtel(i) for i in rows_v_orange if _mtel(i)}
     v_after_str = df[col_v].astype(str).str.strip()
     hs_str = df[col_hs].astype(str).str.strip()
@@ -4370,6 +4384,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         red    = PatternFill(start_color="FFFF0000", end_color="FFFF0000", fill_type="solid")
         green  = PatternFill(start_color="FF00FF00", end_color="FF00FF00", fill_type="solid")
         orange = PatternFill(start_color="FFFF9900", end_color="FFFF9900", fill_type="solid")
+        money_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # HT와 동일한 연노랑
 
         rows_v_blue_excel   = {i + 2 for i in rows_v_blue}
         rows_v_red_excel    = {i + 2 for i in rows_v_red}
@@ -4385,6 +4400,12 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
                 ws.cell(row=r, column=af_idx).fill = green
             if r in rows_v_orange_excel:
                 ws.cell(row=r, column=v_idx).fill = orange
+
+        # HT처럼 자동 변경된 단가 및 총금액 셀만 연노랑으로 표시
+        for df_idx, col_name in meni_money_cells:
+            excel_col = col_idx.get(col_name)
+            if excel_col:
+                ws.cell(row=int(df_idx) + 2, column=excel_col).fill = money_fill
 
         memo = wb.create_sheet("메모")
         memo["A1"] = "AF ≤ 2 (원본)"
@@ -4414,9 +4435,10 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         memo["A9"] = "WIRELESS 전체 대비 변경 비율(%)"
         memo["B9"] = round(wireless_ratio_all, 2)
 
-        memo["A10"] = "해당 HAWB NO 리스트"
+        memo["A10"] = "배제(V=3) 변경 HAWB NO"
+        memo["B10"] = len(excluded_hawb_list)
         row = 11
-        for h in hawb_list:
+        for h in excluded_hawb_list:
             memo[f"A{row}"] = h
             row += 1
 
