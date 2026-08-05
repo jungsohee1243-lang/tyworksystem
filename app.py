@@ -6,11 +6,14 @@ from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import threading
 import unicodedata
+import zipfile
 from typing import Optional, Tuple, List, Dict, Any
+from pathlib import Path
 
 import pandas as pd
 import requests
 import pdfplumber
+import fitz  # PyMuPDF
 import streamlit as st
 from openpyxl import load_workbook
 from openpyxl.styles import PatternFill
@@ -2466,18 +2469,109 @@ def ecommerce_page():
             st.rerun()
 
 
-def address_verify_page():
-    topbar()
-    if st.button("← 전자상거래로 돌아가기", key="addr_back"):
-        st.session_state.page = "ecommerce"
-        st.rerun()
+def _safe_png_filename(name: str) -> str:
+    base = Path(name).stem
+    for ch in '<>:"/\\|?*':
+        base = base.replace(ch, '_')
+    return base.strip() or "pdf"
 
+
+def _pdf_files_to_png_zip(files, dpi_value: int, use_transparent: bool) -> bytes:
+    """업로드된 PDF들을 페이지별 PNG로 변환하여 ZIP 바이트로 반환합니다."""
+    zip_buffer = io.BytesIO()
+    zoom = dpi_value / 72
+    matrix = fitz.Matrix(zoom, zoom)
+
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for uploaded in files:
+            pdf_bytes = uploaded.getvalue()
+            pdf_name = _safe_png_filename(uploaded.name)
+            doc = fitz.open(stream=pdf_bytes, filetype="pdf")
+            try:
+                for page_index in range(len(doc)):
+                    page = doc.load_page(page_index)
+                    pix = page.get_pixmap(matrix=matrix, alpha=use_transparent)
+                    png_bytes = pix.tobytes("png")
+                    out_name = f"{pdf_name}/{pdf_name}_page_{page_index + 1:03d}.png"
+                    zf.writestr(out_name, png_bytes)
+            finally:
+                doc.close()
+
+    zip_buffer.seek(0)
+    return zip_buffer.getvalue()
+
+
+def _render_waybill_png_tab():
     st.markdown(
-        '<div class="content-card"><div class="page-title">📍 주소 / 통관 검증</div>'
-        '<div class="page-sub">행안부 도로명주소 검색 API로 엑셀 주소를 검증하고 정상/오류 결과를 다운로드합니다.</div></div>',
+        '<div class="content-card"><div class="page-title">🖼️ 운송장 PNG 변환</div>'
+        '<div class="page-sub">PDF 운송장을 페이지별 고화질 PNG로 변환하고 ZIP 파일로 내려받습니다.</div></div>',
         unsafe_allow_html=True,
     )
 
+    with st.expander("사용 안내", expanded=True):
+        st.write("- PDF 파일을 여러 개 한 번에 업로드할 수 있습니다.")
+        st.write("- 각 PDF는 페이지별 PNG로 변환됩니다.")
+        st.write("- 변환 결과는 PDF 파일명별 폴더로 나뉜 ZIP 파일로 다운로드됩니다.")
+        st.write("- 일반 운송장은 300 DPI를 권장합니다.")
+
+    uploaded_files = st.file_uploader(
+        "PNG로 변환할 운송장 PDF 업로드",
+        type=["pdf"],
+        accept_multiple_files=True,
+        key="waybill_png_pdf_files",
+        help="여러 PDF 파일을 동시에 선택할 수 있습니다.",
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        dpi = st.selectbox(
+            "이미지 품질(DPI)",
+            [150, 200, 300, 400],
+            index=2,
+            key="waybill_png_dpi",
+        )
+    with c2:
+        transparent = st.checkbox(
+            "투명 배경 사용",
+            value=False,
+            key="waybill_png_transparent",
+        )
+
+    if not uploaded_files:
+        st.info("PDF 운송장 파일을 업로드해주세요.")
+        return
+
+    total_files = len(uploaded_files)
+    st.info(f"총 {total_files}개 PDF 파일이 선택되었습니다.")
+
+    if st.button(
+        "PNG 변환 실행",
+        type="primary",
+        use_container_width=True,
+        key="waybill_png_run",
+    ):
+        try:
+            with st.spinner("운송장을 PNG로 변환 중입니다..."):
+                zip_bytes = _pdf_files_to_png_zip(uploaded_files, dpi, transparent)
+            file_name = f"운송장_PNG_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+            st.session_state["waybill_png_zip_bytes"] = zip_bytes
+            st.session_state["waybill_png_zip_name"] = file_name
+            st.success("변환이 완료되었습니다. 아래 버튼으로 다운로드하세요.")
+        except Exception as e:
+            st.error(f"변환 중 오류가 발생했습니다: {e}")
+
+    if st.session_state.get("waybill_png_zip_bytes"):
+        st.download_button(
+            "⬇️ 운송장 PNG ZIP 다운로드",
+            data=st.session_state["waybill_png_zip_bytes"],
+            file_name=st.session_state.get("waybill_png_zip_name", "운송장_PNG.zip"),
+            mime="application/zip",
+            use_container_width=True,
+            key="waybill_png_download",
+        )
+
+
+def _render_address_validation_tab():
     with st.expander("사용 안내", expanded=True):
         st.write("- 엑셀은 최소 2개 컬럼이 필요합니다. 예: 송장 / 주소")
         st.write("- 행안부 도로명주소 검색 API 승인키를 입력한 뒤 엑셀을 업로드하세요.")
@@ -2613,6 +2707,25 @@ def address_verify_page():
             key="addr_download",
         )
 
+
+
+def address_verify_page():
+    topbar()
+    if st.button("← 전자상거래로 돌아가기", key="addr_back"):
+        st.session_state.page = "ecommerce"
+        st.rerun()
+
+    st.markdown(
+        '<div class="content-card"><div class="page-title">📍 주소 / 통관 검증</div>'
+        '<div class="page-sub">주소 검증과 운송장 PDF의 PNG 변환 기능을 한 화면에서 처리합니다.</div></div>',
+        unsafe_allow_html=True,
+    )
+
+    tab_address, tab_png = st.tabs(["📍 주소 검증", "🖼️ 운송장 PNG 변환"])
+    with tab_address:
+        _render_address_validation_tab()
+    with tab_png:
+        _render_waybill_png_tab()
 
 def seaair_page():
     topbar()
