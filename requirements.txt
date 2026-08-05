@@ -2,5 +2,6 @@ streamlit
 pandas
 requests
 openpyxl
-xlsxwriter
+XlsxWriter
 pdfplumber
+PyMuPDF==1.26.3
