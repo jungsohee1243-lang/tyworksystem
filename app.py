@@ -5207,13 +5207,16 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
 
     squishy_indices = []
     food_indices = []
+    first_desc_col = detail_groups[0][0] if detail_groups else None
     for i in df.index:
-        desc_text = row_all_descriptions_upper(i)
-        if not desc_text:
-            continue
-        if any(keyword in desc_text for keyword in squishy_keywords):
+        # 말랑이류는 첫 번째 품명에서 키워드가 나온 경우에만 V=3 처리
+        first_desc_text = ali_ht_clean_text(df.at[i, first_desc_col]).upper() if first_desc_col is not None else ""
+        if first_desc_text and any(keyword in first_desc_text for keyword in squishy_keywords):
             squishy_indices.append(i)
-        if any(keyword in desc_text for keyword in food_keywords):
+
+        # 식품류는 기존대로 모든 품명에서 키워드 검사
+        desc_text = row_all_descriptions_upper(i)
+        if desc_text and any(keyword in desc_text for keyword in food_keywords):
             food_indices.append(i)
 
     def apply_keyword_v3(indices, kind, keywords):
