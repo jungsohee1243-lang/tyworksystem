@@ -4762,11 +4762,11 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             raise ValueError("상세 품명/QTY/INVOICE VALUE 반복 컬럼을 찾지 못했습니다.")
         detail_groups = [(desc_col, qty_col, unit_col)]
 
-    # 첫 번째 품목(BI~BP)은 제외하고, 두 번째 DESCRIPTION(BQ)부터 영문이 없는 품명을 품명오류로 분리
+    # 첫 번째 품명부터 모든 DESCRIPTION에서 영문이 없는 품명을 품명오류로 분리
     description_error_indices = []
-    if len(detail_groups) > 1:
+    if detail_groups:
         for _i in df.index:
-            for _desc_col, _qcol, _ucol in detail_groups[1:]:
+            for _desc_col, _qcol, _ucol in detail_groups:
                 _desc = ali_ht_clean_text(df.at[_i, _desc_col])
                 if _desc and re.search(r"[A-Za-z]", _desc) is None:
                     description_error_indices.append(_i)
@@ -5186,7 +5186,75 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             add_log("V3_150이상그룹", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"1차 보정 후 V=3 동일 수취인+전화번호 그룹에 150불 이상 건 포함: 최고금액 HAWB {row_hawb(keep)} 1건 유지, 나머지 약 10불로 조정", modified[0])
     # ────────────────────────────────────────────────────────────────────────────
 
-    memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유"]
+    # 최종 후처리: 특정 품명 키워드가 포함된 송장은 모든 기존 변환이 끝난 뒤 V(용도구분)=3으로 변경
+    # - 말랑이류: SQUEEZE TOY / STRESS RELIEF TOY / STRESS BALL / STRESS RELIEF BALL
+    # - 식품류: SEEDS / TEA / NUTS / CANDY / SNACK
+    # 메모 시트에는 유형, 송장(HAWB NO), 해당 유형 전체 건수를 남긴다.
+    squishy_keywords = [
+        "SQUEEZE TOY",
+        "STRESS RELIEF TOY",
+        "STRESS BALL",
+        "STRESS RELIEF BALL",
+    ]
+    food_keywords = ["SEEDS", "TEA", "NUTS", "CANDY", "SNACK"]
+
+    def row_all_descriptions_upper(i):
+        return " | ".join(
+            ali_ht_clean_text(df.at[i, desc_col]).upper()
+            for desc_col, _qty_col, _unit_col in detail_groups
+            if ali_ht_clean_text(df.at[i, desc_col])
+        )
+
+    squishy_indices = []
+    food_indices = []
+    for i in df.index:
+        desc_text = row_all_descriptions_upper(i)
+        if not desc_text:
+            continue
+        if any(keyword in desc_text for keyword in squishy_keywords):
+            squishy_indices.append(i)
+        if any(keyword in desc_text for keyword in food_keywords):
+            food_indices.append(i)
+
+    def apply_keyword_v3(indices, kind, keywords):
+        nonlocal log_group_no
+        if not indices:
+            return 0
+
+        # 메모에서 한 유형의 송장들을 같은 그룹번호로 묶어 확인하기 쉽게 표시
+        log_group_no += 1
+        group_no = log_group_no
+        total_count = len(indices)
+
+        for i in indices:
+            before_v = ali_ht_clean_text(df.at[i, col_v])
+            changed = before_v != "3"
+            if changed:
+                excel_set(i, col_v, "3")
+                v_changed_cells.add((i, col_v))
+
+            desc_text = row_all_descriptions_upper(i)
+            matched = [kw for kw in keywords if kw in desc_text]
+            logs.append({
+                "구분": kind,
+                "그룹번호": group_no,
+                "수취인": row_name(i),
+                "전화번호": row_tel(i),
+                "HAWB NO": row_hawb(i),
+                "원본행": i + 2,
+                "처리상태": "수정" if changed else "유지(이미3)",
+                "변경항목": "V(용도구분)",
+                "변경전": before_v,
+                "변경후": "3",
+                "사유": f"{kind} - 품명 키워드 감지: {', '.join(matched)}",
+                "건수": total_count,
+            })
+        return total_count
+
+    squishy_change_count = apply_keyword_v3(squishy_indices, "말랑이변경", squishy_keywords)
+    food_change_count = apply_keyword_v3(food_indices, "식품변경", food_keywords)
+
+    memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유", "건수"]
     memo_df = pd.DataFrame(logs, columns=memo_columns)
     excluded_df = pd.DataFrame({"목록건에서 배제로 변경된 HAWB NO": excluded_from_list_hawbs})
 
@@ -5200,6 +5268,8 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "V3 150~160불→143 단일건 보정": v3_150_adjusted_count,
         "V3 보정 후 150불 이상 포함 그룹 조정": v3_150_group_adjust_count,
         "품명 변경 셀 수": name_change_count,
+        "말랑이 V=3 후처리 송장 수": squishy_change_count,
+        "식품 V=3 후처리 송장 수": food_change_count,
         "품명오류 송장 수": len(description_error_indices),
         "목록→배제 변경 HAWB 수": len(excluded_from_list_hawbs),
         "전체 변경/확인 로그 수": len(memo_df),
@@ -5241,7 +5311,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
     widths = {
         "A": 14, "B": 10, "C": 18, "D": 18, "E": 22, "F": 10,
-        "G": 12, "H": 22, "I": 55, "J": 55, "K": 55,
+        "G": 12, "H": 22, "I": 55, "J": 55, "K": 55, "L": 10,
     }
     for col_letter, width in widths.items():
         memo_ws.column_dimensions[col_letter].width = width
@@ -5285,7 +5355,7 @@ def ali_ht_convert_page():
     )
 
     uploaded = st.file_uploader("알리 HT 엑셀 파일 업로드", type=["xlsx", "xls"], key="ali_ht_file")
-    st.caption("기준: 같은 수취인+전화번호 합산 150~160불은 143불 우선 보정, 보정 후 150불 이상은 V=3 변경, V=3도 150~160불 보정 후 150불 이상 포함 그룹을 조정하며, 2번째 품목부터 영문 없는 품명은 품명오류 시트로 분리합니다.")
+    st.caption("기준: 같은 수취인+전화번호 합산 150~160불은 143불 우선 보정, 보정 후 150불 이상은 V=3 변경, V=3도 150~160불 보정 후 150불 이상 포함 그룹을 조정하며, 첫 번째 품명부터 영문 없는 품명은 품명오류 시트로 분리합니다.")
 
     if uploaded:
         if st.button("✅ 알리 HT변환 실행", type="primary", use_container_width=True, key="ali_ht_run"):
