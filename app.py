@@ -5268,6 +5268,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     # 최종 후처리: 전체 품명에서 요청 키워드를 검사하여 V(용도구분)=3으로 변경
     # 식품 키워드는 완전한 영문 단어 기준으로 검사하여 TEA가 SEAT에 잡히는 등의 오탐을 방지한다.
     food_keywords = [
+        "SEEDS", "NUTS",
         "NOODLE", "NOODLES", "SNACK", "RICE", "SAUCE", "SEASONING", "CANDY",
         "TEA", "POWDER", "SOUP", "DRINK", "PASTE", "MILK", "DRIED", "PICKLED",
         "CAKE", "JELLY", "PASTRY", "BEVERAGE", "CHIPS", "PEANUT", "CORN", "BEEF",
