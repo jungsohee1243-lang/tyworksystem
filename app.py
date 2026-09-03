@@ -4241,6 +4241,35 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     df.loc[mask_v, col_v] = "3"
     rows_v_red = df.index[mask_v].tolist()
 
+    # 추가 전파 배제 규칙: 전체 DESCRIPTION에서 HAIR DRYER / WIRELESS / BLUETOOTH 검사
+    # 완전한 영문 단어/구문 기준, 대소문자 무관
+    meni_extra_exclude_keywords = ["HAIR DRYER", "WIRELESS", "BLUETOOTH"]
+
+    def _meni_all_desc_upper(i):
+        return " | ".join(
+            "" if pd.isna(df.at[i, dcol]) else str(df.at[i, dcol]).strip().upper()
+            for dcol, _qcol, _ucol in meni_detail_groups
+            if not pd.isna(df.at[i, dcol]) and str(df.at[i, dcol]).strip()
+        )
+
+    def _meni_whole_word_matches(text, keywords):
+        return [
+            kw for kw in keywords
+            if re.search(r"(?<![A-Z0-9])" + re.escape(kw.upper()) + r"(?![A-Z0-9])", text)
+        ]
+
+    meni_extra_exclude_indices = []
+    meni_extra_exclude_hawbs = []
+    for _i in df.index:
+        _desc_text = _meni_all_desc_upper(_i)
+        if _desc_text and _meni_whole_word_matches(_desc_text, meni_extra_exclude_keywords):
+            meni_extra_exclude_indices.append(_i)
+            if str(df.at[_i, col_v]).strip() != "3":
+                df.at[_i, col_v] = "3"
+            _hawb = "" if pd.isna(df.at[_i, col_hawb]) else str(df.at[_i, col_hawb]).strip()
+            if _hawb:
+                meni_extra_exclude_hawbs.append(_hawb)
+
     w = pd.to_numeric(df[col_af], errors="coerce")
     mask_range = (w >= 2) & (w <= 5)
     bp_empty = df[col_desc2].isna() | (df[col_desc2].astype(str).str.strip() == "")
@@ -4499,7 +4528,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         orange = PatternFill(start_color="FFFF9900", end_color="FFFF9900", fill_type="solid")
         money_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # HT와 동일한 연노랑
 
-        rows_v_blue_excel   = {i + 2 for i in rows_v_blue}
+        rows_v_blue_excel   = {i + 2 for i in (rows_v_blue + meni_extra_exclude_indices)}
         rows_v_red_excel    = {i + 2 for i in rows_v_red}
         rows_af_excel       = {i + 2 for i in t_idx}
         rows_v_orange_excel = {i + 2 for i in rows_v_orange}
@@ -4556,6 +4585,14 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
             row += 1
 
         row += 1
+        memo[f"A{row}"] = "추가배제 변경건"
+        memo[f"B{row}"] = len(list(dict.fromkeys(meni_extra_exclude_hawbs)))
+        row += 1
+        for h in dict.fromkeys(meni_extra_exclude_hawbs):
+            memo[f"A{row}"] = h
+            row += 1
+
+        row += 1
         memo[f"A{row}"] = "FTA적용건 HAWB 리스트"
         memo[f"B{row}"] = len(fta_hawb_list)
         row += 1
@@ -4569,6 +4606,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         "원본 AF≤2": count_le2_orig,
         "분배 후 AF≤2": count_le2_after,
         "WIRELESS 변경": wireless_changed_cnt,
+        "추가배제 변경건": len(list(dict.fromkeys(meni_extra_exclude_hawbs))),
         "키워드 V변경": len(rows_v_red),
         "중량 1차 재분배": len(t_idx),
         "V1 150~160→143 보정 그룹": meni_v1_adjusted_groups,
@@ -4915,6 +4953,47 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                     add_log("V변경(품명배제)", [i], [i], "V(용도구분)",
                             v_before, "3", "품명 변경으로 인한 배제(3) 자동 처리", i)
 
+    # 추가 품명 정리 규칙
+    # 1) 품명에서 완전한 단어 BALL / BALLS 뒤에 TOY가 없으면 " TOY" 추가
+    # 2) MANGO FLESH는 "MANGO FLESH BALL TOY"로 변경
+    for i in df.index:
+        for desc_col, _qty_col, _unit_col in detail_groups:
+            before = ali_ht_clean_text(df.at[i, desc_col])
+            if not before:
+                continue
+
+            after = before
+            if re.search(r"(?<![A-Z0-9])MANGO\s+FLESH(?![A-Z0-9])", after, flags=re.IGNORECASE):
+                after = re.sub(
+                    r"(?<![A-Z0-9])MANGO\s+FLESH(?![A-Z0-9])",
+                    "MANGO FLESH BALL TOY",
+                    after,
+                    flags=re.IGNORECASE,
+                )
+
+            # BALL / BALLS 바로 뒤에 이미 TOY가 있으면 중복 추가하지 않음
+            after = re.sub(
+                r"(?<![A-Z0-9])(BALLS?)(?![A-Z0-9])(?!\s+TOY\b)",
+                lambda m: m.group(1) + " TOY",
+                after,
+                flags=re.IGNORECASE,
+            )
+
+            if after != before:
+                excel_set(i, desc_col, after)
+                desc_changed_cells.add((i, desc_col))
+                name_change_count += 1
+                add_log(
+                    "품명변경",
+                    [i],
+                    [i],
+                    desc_col,
+                    before,
+                    after,
+                    "BALL/BALLS → BALL/BALLS TOY 또는 MANGO FLESH → MANGO FLESH BALL TOY",
+                    i,
+                )
+
     # AD 허용품목코드 6자리 문자형 + 30 시작코드 960719 변경
     if col_hs is not None:
         for i in df.index:
@@ -5186,17 +5265,19 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             add_log("V3_150이상그룹", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"1차 보정 후 V=3 동일 수취인+전화번호 그룹에 150불 이상 건 포함: 최고금액 HAWB {row_hawb(keep)} 1건 유지, 나머지 약 10불로 조정", modified[0])
     # ────────────────────────────────────────────────────────────────────────────
 
-    # 최종 후처리: 특정 품명 키워드가 포함된 송장은 모든 기존 변환이 끝난 뒤 V(용도구분)=3으로 변경
-    # - 말랑이류: SQUEEZE TOY / STRESS RELIEF TOY / STRESS BALL / STRESS RELIEF BALL
-    # - 식품류: SEEDS / TEA / NUTS / CANDY / SNACK
-    # 메모 시트에는 유형, 송장(HAWB NO), 해당 유형 전체 건수를 남긴다.
-    squishy_keywords = [
-        "SQUEEZE TOY",
-        "STRESS RELIEF TOY",
-        "STRESS BALL",
-        "STRESS RELIEF BALL",
+    # 최종 후처리: 전체 품명에서 요청 키워드를 검사하여 V(용도구분)=3으로 변경
+    # 식품 키워드는 완전한 영문 단어 기준으로 검사하여 TEA가 SEAT에 잡히는 등의 오탐을 방지한다.
+    food_keywords = [
+        "NOODLE", "NOODLES", "SNACK", "RICE", "SAUCE", "SEASONING", "CANDY",
+        "TEA", "POWDER", "SOUP", "DRINK", "PASTE", "MILK", "DRIED", "PICKLED",
+        "CAKE", "JELLY", "PASTRY", "BEVERAGE", "CHIPS", "PEANUT", "CORN", "BEEF",
+        "INSTANT",
     ]
-    food_keywords = ["SEEDS", "TEA", "NUTS", "CANDY", "SNACK"]
+    squishy_keywords = [
+        "SQUEEZE TOY", "STRESS RELIEF TOY", "STRESS BALL", "STRESS RELIEF BALL", "STRESS",
+    ]
+    radio_keywords = ["HAIR DRYER", "WIRELESS", "BLUETOOTH"]
+    lens_keywords = ["LENS"]
 
     def row_all_descriptions_upper(i):
         return " | ".join(
@@ -5205,26 +5286,31 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             if ali_ht_clean_text(df.at[i, desc_col])
         )
 
-    squishy_indices = []
-    food_indices = []
-    first_desc_col = detail_groups[0][0] if detail_groups else None
-    for i in df.index:
-        # 말랑이류는 첫 번째 품명에서 키워드가 나온 경우에만 V=3 처리
-        first_desc_text = ali_ht_clean_text(df.at[i, first_desc_col]).upper() if first_desc_col is not None else ""
-        if first_desc_text and any(keyword in first_desc_text for keyword in squishy_keywords):
-            squishy_indices.append(i)
+    def _whole_word_matches(text, keywords):
+        return [
+            kw for kw in keywords
+            if re.search(r"(?<![A-Z0-9])" + re.escape(kw.upper()) + r"(?![A-Z0-9])", text)
+        ]
 
-        # 식품류는 기존대로 모든 품명에서 키워드 검사
+    food_indices, squishy_indices, radio_indices, lens_indices = [], [], [], []
+    for i in df.index:
         desc_text = row_all_descriptions_upper(i)
-        if desc_text and any(keyword in desc_text for keyword in food_keywords):
+        if not desc_text:
+            continue
+        if _whole_word_matches(desc_text, food_keywords):
             food_indices.append(i)
+        if _whole_word_matches(desc_text, squishy_keywords):
+            squishy_indices.append(i)
+        if _whole_word_matches(desc_text, radio_keywords):
+            radio_indices.append(i)
+        if _whole_word_matches(desc_text, lens_keywords):
+            lens_indices.append(i)
 
     def apply_keyword_v3(indices, kind, keywords):
         nonlocal log_group_no
         if not indices:
             return 0
 
-        # 메모에서 한 유형의 송장들을 같은 그룹번호로 묶어 확인하기 쉽게 표시
         log_group_no += 1
         group_no = log_group_no
         total_count = len(indices)
@@ -5237,7 +5323,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                 v_changed_cells.add((i, col_v))
 
             desc_text = row_all_descriptions_upper(i)
-            matched = [kw for kw in keywords if kw in desc_text]
+            matched = _whole_word_matches(desc_text, keywords)
             logs.append({
                 "구분": kind,
                 "그룹번호": group_no,
@@ -5254,8 +5340,10 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             })
         return total_count
 
+    food_change_count = apply_keyword_v3(food_indices, "추가식품 배제변경", food_keywords)
     squishy_change_count = apply_keyword_v3(squishy_indices, "말랑이변경", squishy_keywords)
-    food_change_count = apply_keyword_v3(food_indices, "식품변경", food_keywords)
+    radio_change_count = apply_keyword_v3(radio_indices, "추가전파 배제변경", radio_keywords)
+    lens_change_count = apply_keyword_v3(lens_indices, "렌즈배제변경", lens_keywords)
 
     memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유", "건수"]
     memo_df = pd.DataFrame(logs, columns=memo_columns)
@@ -5272,7 +5360,9 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "V3 보정 후 150불 이상 포함 그룹 조정": v3_150_group_adjust_count,
         "품명 변경 셀 수": name_change_count,
         "말랑이 V=3 후처리 송장 수": squishy_change_count,
-        "식품 V=3 후처리 송장 수": food_change_count,
+        "추가식품 V=3 후처리 송장 수": food_change_count,
+        "추가전파 V=3 후처리 송장 수": radio_change_count,
+        "렌즈 V=3 후처리 송장 수": lens_change_count,
         "품명오류 송장 수": len(description_error_indices),
         "목록→배제 변경 HAWB 수": len(excluded_from_list_hawbs),
         "전체 변경/확인 로그 수": len(memo_df),
