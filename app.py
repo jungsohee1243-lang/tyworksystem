@@ -4241,20 +4241,18 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     df.loc[mask_v, col_v] = "3"
     rows_v_red = df.index[mask_v].tolist()
 
-    # 추가 배제 규칙: 전체 DESCRIPTION에서 아래 문자열이 순서 그대로 연속 포함되면 V=3
-    # 예: TEA -> TEAPOT은 포함, SEAT은 미포함
-    meni_food_keywords = [
-        "NOODLE", "NOODLES", "RICE", "SAUCE", "SEASONING", "POWDER", "SOUP",
-        "DRINK", "PASTE", "MILK", "DRIED", "PICKLED", "CAKE", "JELLY", "PASTRY",
-        "BEVERAGE", "CHIPS", "PEANUT", "CORN", "BEEF", "INSTANT",
-    ]
-    meni_radio_keywords = ["HAIR DRYER", "WIRELESS", "BLUETOOTH", "PHONE", "SMART", "DISPENSER"]
-    meni_lens_keywords = ["LENS", "LENSES", "COLORED"]
+    # 추가 배제 규칙: 전체 DESCRIPTION에 아래 키워드가 포함되면 V=3
+    # 알리메니변환 전용 규칙
+    # - 전파: HAIR DRYER / WIRELESS / BLUETOOTH / SMART
+    # - 렌즈: LENS / LENSES
+    # - 말랑이: 기존 규칙 유지
+    # - 식품 추가배제 규칙은 사용하지 않음
+    meni_radio_keywords = ["HAIR DRYER", "WIRELESS", "BLUETOOTH", "SMART"]
+    meni_lens_keywords = ["LENS", "LENSES"]
     meni_squishy_keywords = [
         "SQUEEZE TOY", "STRESS RELIEF TOY", "STRESS BALL", "STRESS RELIEF BALL", "STRESS",
     ]
     meni_keyword_groups = [
-        ("추가식품 배제변경", meni_food_keywords),
         ("추가전파 배제변경", meni_radio_keywords),
         ("렌즈배제변경", meni_lens_keywords),
         ("말랑이변경", meni_squishy_keywords),
