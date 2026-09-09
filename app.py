@@ -4290,23 +4290,6 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
             if _hawb:
                 meni_extra_exclude_hawbs.append(_hawb)
 
-    # 상세물품 QTY 합계가 20 초과이면 V=3 + 메모에 '수량과다 배제변경' 기록
-    meni_qty_over_indices = []
-    meni_qty_over_hawbs = []
-    meni_qty_over_totals = {}
-    for _i in df.index:
-        _qty_total = 0.0
-        for _dcol, _qcol, _ucol in meni_detail_groups:
-            _qty_total += pd.to_numeric(pd.Series([df.at[_i, _qcol]]), errors="coerce").fillna(0).iloc[0]
-        if _qty_total > 20:
-            meni_qty_over_indices.append(_i)
-            meni_qty_over_totals[_i] = float(_qty_total)
-            if str(df.at[_i, col_v]).strip() != "3":
-                df.at[_i, col_v] = "3"
-            _hawb = "" if pd.isna(df.at[_i, col_hawb]) else str(df.at[_i, col_hawb]).strip()
-            if _hawb:
-                meni_qty_over_hawbs.append(_hawb)
-
     w = pd.to_numeric(df[col_af], errors="coerce")
     mask_range = (w >= 2) & (w <= 5)
     bp_empty = df[col_desc2].isna() | (df[col_desc2].astype(str).str.strip() == "")
@@ -4565,7 +4548,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         orange = PatternFill(start_color="FFFF9900", end_color="FFFF9900", fill_type="solid")
         money_fill = PatternFill(start_color="FFF2CC", end_color="FFF2CC", fill_type="solid")  # HT와 동일한 연노랑
 
-        rows_v_blue_excel   = {i + 2 for i in (rows_v_blue + meni_extra_exclude_indices + meni_qty_over_indices)}
+        rows_v_blue_excel   = {i + 2 for i in (rows_v_blue + meni_extra_exclude_indices)}
         rows_v_red_excel    = {i + 2 for i in rows_v_red}
         rows_af_excel       = {i + 2 for i in t_idx}
         rows_v_orange_excel = {i + 2 for i in rows_v_orange}
@@ -4640,19 +4623,6 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
                 memo[f"A{row}"] = _h
                 row += 1
 
-        # 수량과다 배제변경: 상세 QTY 합계가 20 초과인 행
-        row += 1
-        memo[f"A{row}"] = "수량과다 배제변경"
-        memo[f"B{row}"] = len(meni_qty_over_indices)
-        row += 1
-        memo[f"A{row}"] = "HAWB NO"
-        memo[f"B{row}"] = "상세 QTY 합계"
-        row += 1
-        for _i in meni_qty_over_indices:
-            memo[f"A{row}"] = _mclean(df.at[_i, col_hawb])
-            memo[f"B{row}"] = meni_qty_over_totals.get(_i, 0)
-            row += 1
-
         row += 1
         memo[f"A{row}"] = "FTA적용건 HAWB 리스트"
         memo[f"B{row}"] = len(fta_hawb_list)
@@ -4668,7 +4638,6 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         "분배 후 AF≤2": count_le2_after,
         "WIRELESS 변경": wireless_changed_cnt,
         "추가배제 변경건": len(list(dict.fromkeys(meni_extra_exclude_hawbs))),
-        "수량과다 배제변경": len(meni_qty_over_indices),
         "키워드 V변경": len(rows_v_red),
         "중량 1차 재분배": len(t_idx),
         "V1 150~160→143 보정 그룹": meni_v1_adjusted_groups,
@@ -5403,39 +5372,6 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     radio_change_count = apply_keyword_v3(radio_indices, "추가전파 배제변경", radio_keywords)
     lens_change_count = apply_keyword_v3(lens_indices, "렌즈배제변경", lens_keywords)
 
-    # 상세 QTY 합계가 20 초과이면 V=3, 메모에 '수량과다 배제변경' 기록
-    qty_over_indices = []
-    for i in df.index:
-        qty_total = round(sum(ali_ht_to_number(df.at[i, qty_col]) for _desc_col, qty_col, _unit_col in detail_groups), 4)
-        if qty_total <= 20:
-            continue
-        qty_over_indices.append(i)
-
-    if qty_over_indices:
-        log_group_no += 1
-        qty_group_no = log_group_no
-        for i in qty_over_indices:
-            qty_total = round(sum(ali_ht_to_number(df.at[i, qty_col]) for _desc_col, qty_col, _unit_col in detail_groups), 4)
-            before_v = ali_ht_clean_text(df.at[i, col_v])
-            changed = before_v != "3"
-            if changed:
-                excel_set(i, col_v, "3")
-                v_changed_cells.add((i, col_v))
-            logs.append({
-                "구분": "수량과다 배제변경",
-                "그룹번호": qty_group_no,
-                "수취인": row_name(i),
-                "전화번호": row_tel(i),
-                "HAWB NO": row_hawb(i),
-                "원본행": i + 2,
-                "처리상태": "수정" if changed else "유지(이미3)",
-                "변경항목": "V(용도구분)",
-                "변경전": before_v,
-                "변경후": "3",
-                "사유": f"수량과다 배제변경 - 상세 QTY 합계 {qty_total} (20 초과)",
-                "건수": len(qty_over_indices),
-            })
-
     memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유", "건수"]
     memo_df = pd.DataFrame(logs, columns=memo_columns)
     excluded_df = pd.DataFrame({"목록건에서 배제로 변경된 HAWB NO": excluded_from_list_hawbs})
@@ -5454,7 +5390,6 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "추가식품 V=3 후처리 송장 수": food_change_count,
         "추가전파 V=3 후처리 송장 수": radio_change_count,
         "렌즈 V=3 후처리 송장 수": lens_change_count,
-        "수량과다 V=3 후처리 송장 수": len(qty_over_indices),
         "품명오류 송장 수": len(description_error_indices),
         "목록→배제 변경 HAWB 수": len(excluded_from_list_hawbs),
         "전체 변경/확인 로그 수": len(memo_df),
