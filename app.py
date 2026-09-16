@@ -4248,13 +4248,15 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     # - 말랑이: 기존 규칙 유지
     # - 식품 추가배제 규칙은 사용하지 않음
     meni_radio_keywords = ["HAIR DRYER", "WIRELESS", "BLUETOOTH", "SMART"]
-    meni_lens_keywords = ["LENS", "LENSES"]
+    meni_lens_keywords = ["LENS", "LENSES", "CONTACT LENSES", "COLORED CONTACT LENSES"]
+    meni_requested_v3_keywords = ["SNACK", "BALL TOY", "BALLS TOY", "CHILDREN"]
     meni_squishy_keywords = [
         "SQUEEZE TOY", "STRESS RELIEF TOY", "STRESS BALL", "STRESS RELIEF BALL", "STRESS",
     ]
     meni_keyword_groups = [
         ("추가전파 배제변경", meni_radio_keywords),
         ("렌즈배제변경", meni_lens_keywords),
+        ("추가품명 배제변경", meni_requested_v3_keywords),
         ("말랑이변경", meni_squishy_keywords),
     ]
 
@@ -5025,6 +5027,23 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                     i,
                 )
 
+                # BALL/BALLS → BALL TOY/BALLS TOY 변경 후 해당 행은 용도구분 V=3으로 배제
+                if re.search(r"(?<![A-Z0-9])BALLS?\s+TOY(?![A-Z0-9])", after, flags=re.IGNORECASE):
+                    v_before = ali_ht_clean_text(df.at[i, col_v])
+                    if v_before != "3":
+                        excel_set(i, col_v, "3")
+                        v_changed_cells.add((i, col_v))
+                        add_log(
+                            "V변경(BALL TOY 배제)",
+                            [i],
+                            [i],
+                            "V(용도구분)",
+                            v_before,
+                            "3",
+                            "BALL TOY/BALLS TOY 품명으로 변경되어 V=3 배제 처리",
+                            i,
+                        )
+
     # AD 허용품목코드 6자리 문자형 + 30 시작코드 960719 변경
     if col_hs is not None:
         for i in df.index:
@@ -5301,13 +5320,14 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     food_keywords = [
         "NOODLE", "NOODLES", "RICE", "SAUCE", "SEASONING", "POWDER", "SOUP",
         "DRINK", "PASTE", "MILK", "DRIED", "PICKLED", "CAKE", "JELLY", "PASTRY",
-        "BEVERAGE", "CHIPS", "PEANUT", "CORN", "BEEF", "INSTANT",
+        "BEVERAGE", "CHIPS", "PEANUT", "CORN", "BEEF", "INSTANT", "SNACK",
     ]
     squishy_keywords = [
         "SQUEEZE TOY", "STRESS RELIEF TOY", "STRESS BALL", "STRESS RELIEF BALL", "STRESS",
     ]
     radio_keywords = ["HAIR DRYER", "WIRELESS", "BLUETOOTH", "PHONE", "SMART", "DISPENSER"]
-    lens_keywords = ["LENS", "LENSES", "COLORED"]
+    lens_keywords = ["LENS", "LENSES", "CONTACT LENSES", "COLORED CONTACT LENSES", "COLORED"]
+    requested_v3_keywords = ["BALL TOY", "BALLS TOY", "CHILDREN"]
 
     def row_all_descriptions_upper(i):
         return " | ".join(
@@ -5319,7 +5339,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     def _contains_matches(text, keywords):
         return [kw for kw in keywords if kw.upper() in text]
 
-    food_indices, squishy_indices, radio_indices, lens_indices = [], [], [], []
+    food_indices, squishy_indices, radio_indices, lens_indices, requested_v3_indices = [], [], [], [], []
     for i in df.index:
         desc_text = row_all_descriptions_upper(i)
         if not desc_text:
@@ -5332,6 +5352,8 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             radio_indices.append(i)
         if _contains_matches(desc_text, lens_keywords):
             lens_indices.append(i)
+        if _contains_matches(desc_text, requested_v3_keywords):
+            requested_v3_indices.append(i)
 
     def apply_keyword_v3(indices, kind, keywords):
         nonlocal log_group_no
@@ -5371,6 +5393,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     squishy_change_count = apply_keyword_v3(squishy_indices, "말랑이변경", squishy_keywords)
     radio_change_count = apply_keyword_v3(radio_indices, "추가전파 배제변경", radio_keywords)
     lens_change_count = apply_keyword_v3(lens_indices, "렌즈배제변경", lens_keywords)
+    requested_v3_change_count = apply_keyword_v3(requested_v3_indices, "추가품명 배제변경", requested_v3_keywords)
 
     memo_columns = ["구분", "그룹번호", "수취인", "전화번호", "HAWB NO", "원본행", "처리상태", "변경항목", "변경전", "변경후", "사유", "건수"]
     memo_df = pd.DataFrame(logs, columns=memo_columns)
@@ -5390,6 +5413,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "추가식품 V=3 후처리 송장 수": food_change_count,
         "추가전파 V=3 후처리 송장 수": radio_change_count,
         "렌즈 V=3 후처리 송장 수": lens_change_count,
+        "추가품명 V=3 후처리 송장 수": requested_v3_change_count,
         "품명오류 송장 수": len(description_error_indices),
         "목록→배제 변경 HAWB 수": len(excluded_from_list_hawbs),
         "전체 변경/확인 로그 수": len(memo_df),
