@@ -4247,7 +4247,17 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     # - 렌즈: LENS / LENSES
     # - 말랑이: 기존 규칙 유지
     # - 식품 추가배제 규칙은 사용하지 않음
-    meni_radio_keywords = ["HAIR DRYER", "WIRELESS", "BLUETOOTH", "SMART"]
+    meni_radio_keywords = [
+        # 기존 전파 품명
+        "MINI PC", "VIBRATOR", "SMART WATCH", "EARPHONES",
+        "TABLET ANDROID", "TABLET PC", "SPEAKERS", "SMARTPHONE",
+        "LENOVO XIAOXIN PAD", "IPAD TABLET", "TABLET", "DRAWING BOARD",
+        "BLUETOOTH SPEAKER", "BLUETOOTH EARPHONE CLIP", "BLUETOOTH EARBUDS", "BLUETOOTH",
+        "WIRELESS EARPHONES", "WIRELESS HEADPHONES", "WIRELESS EARBUDS",
+        "WIRELESS BLUETOOTH EARPHONES", "WIRELESS BLUETOOTH HEADPHONES",
+        # 추가 전파 키워드
+        "HAIR DRYER", "WIRELESS", "SMART", "C TYPE", "LED",
+    ]
     meni_lens_keywords = ["LENS", "LENSES", "CONTACT LENSES", "COLORED CONTACT LENSES"]
     meni_requested_v3_keywords = ["SNACK", "BALL TOY", "BALLS TOY", "CHILDREN"]
     meni_squishy_keywords = [
@@ -4291,6 +4301,27 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
             _hawb = "" if pd.isna(df.at[_i, col_hawb]) else str(df.at[_i, col_hawb]).strip()
             if _hawb:
                 meni_extra_exclude_hawbs.append(_hawb)
+
+    # 전파 품명이 들어간 상세품목의 QTY를 1로 변경
+    # - DESCRIPTION별 대응 QTY 컬럼(BO열부터 이어지는 상세 QTY 구조)을 개별 처리
+    # - 기존 수량이 1 초과 ~ 50 이하인 경우만 1로 변경
+    meni_radio_qty_changed = 0
+    meni_radio_qty_hawbs = []
+    for _i in df.index:
+        _row_changed = False
+        for _dcol, _qcol, _ucol in meni_detail_groups:
+            _desc = "" if pd.isna(df.at[_i, _dcol]) else str(df.at[_i, _dcol]).strip().upper()
+            if not _desc or not _meni_contains_matches(_desc, meni_radio_keywords):
+                continue
+            _qty = pd.to_numeric(pd.Series([df.at[_i, _qcol]]), errors="coerce").iloc[0]
+            if pd.notna(_qty) and 1 < float(_qty) <= 50:
+                df.at[_i, _qcol] = 1
+                meni_radio_qty_changed += 1
+                _row_changed = True
+        if _row_changed:
+            _hawb = "" if pd.isna(df.at[_i, col_hawb]) else str(df.at[_i, col_hawb]).strip()
+            if _hawb:
+                meni_radio_qty_hawbs.append(_hawb)
 
     w = pd.to_numeric(df[col_af], errors="coerce")
     mask_range = (w >= 2) & (w <= 5)
@@ -4520,6 +4551,39 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         df.at[i, col_total] = _mrecalc(i)
         meni_money_cells.add((i, col_total))
 
+    # 최종 금액 안전장치: 모든 기존 금액/수량 규칙 처리 후 总金额이 1불 미만이면 최소 1불로 보정
+    # 상세 QTY는 유지하고, 해당 행의 상세 단가를 비례 조정한 뒤 첫 상세품목 단가에 미세 보정하여 총액을 1.00에 맞춤
+    meni_min1_adjusted = 0
+    for _i in df.index:
+        _old_total = _mtotal(_i)
+        if not (0 <= _old_total < 1.0) or not meni_detail_groups:
+            continue
+        _active = []
+        for _dcol, _qcol, _ucol in meni_detail_groups:
+            _desc = _mclean(df.at[_i, _dcol])
+            _qty = _mqty(_i, _qcol)
+            _unit = _munit(_i, _ucol)
+            if _qty > 0 and (_desc or _unit > 0):
+                _active.append((_dcol, _qcol, _ucol, _qty, _unit))
+        if not _active:
+            continue
+        _base = sum(max(_unit, 0.0) * _qty for _d, _q, _u, _qty, _unit in _active)
+        if _base > 0:
+            _scale = 1.0 / _base
+            for _dcol, _qcol, _ucol, _qty, _unit in _active:
+                _mset(_i, _ucol, round(max(_unit, 0.0) * _scale, 6))
+        else:
+            _dcol, _qcol, _ucol, _qty, _unit = _active[0]
+            _mset(_i, _ucol, round(1.0 / _qty, 6))
+        # 반올림 오차는 첫 상세 단가에 보정
+        _calc = sum(_mnum(df.at[_i, _ucol]) * _qty for _d, _q, _ucol, _qty, _unit in _active)
+        _residual = 1.0 - _calc
+        if abs(_residual) > 0.0000005:
+            _d0, _q0, _u0, _qty0, _unit0 = _active[0]
+            _mset(_i, _u0, round(_mnum(df.at[_i, _u0]) + (_residual / _qty0), 6))
+        _mset(_i, col_total, 1.00)
+        meni_min1_adjusted += 1
+
     bad_tels = {_mtel(i) for i in rows_v_orange if _mtel(i)}
     v_after_str = df[col_v].astype(str).str.strip()
     hs_str = df[col_hs].astype(str).str.strip()
@@ -4640,6 +4704,8 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         "분배 후 AF≤2": count_le2_after,
         "WIRELESS 변경": wireless_changed_cnt,
         "추가배제 변경건": len(list(dict.fromkeys(meni_extra_exclude_hawbs))),
+        "전파 상세QTY 1 변경": meni_radio_qty_changed,
+        "총금액 1불 미만→1불 보정": meni_min1_adjusted,
         "키워드 V변경": len(rows_v_red),
         "중량 1차 재분배": len(t_idx),
         "V1 150~160→143 보정 그룹": meni_v1_adjusted_groups,
@@ -5044,6 +5110,24 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                             i,
                         )
 
+    # 추가 품명 규칙: SEAL ANIMAL 포함 품목은 품명 맨 뒤에 TOY 추가 + V=3
+    for i in df.index:
+        for desc_col, _qty_col, _unit_col in detail_groups:
+            before = ali_ht_clean_text(df.at[i, desc_col])
+            if not before or "SEAL ANIMAL" not in before.upper():
+                continue
+            after = before if re.search(r"\bTOY\s*$", before, flags=re.IGNORECASE) else before.rstrip() + " TOY"
+            if after != before:
+                excel_set(i, desc_col, after)
+                desc_changed_cells.add((i, desc_col))
+                name_change_count += 1
+                add_log("품명변경", [i], [i], desc_col, before, after, "SEAL ANIMAL 포함 품목 → 품명 뒤 TOY 추가", i)
+            v_before = ali_ht_clean_text(df.at[i, col_v])
+            if v_before != "3":
+                excel_set(i, col_v, "3")
+                v_changed_cells.add((i, col_v))
+                add_log("V변경(SEAL ANIMAL 배제)", [i], [i], "V(용도구분)", v_before, "3", "SEAL ANIMAL 포함 품목 V=3 배제 처리", i)
+
     # AD 허용품목코드 6자리 문자형 + 30 시작코드 960719 변경
     if col_hs is not None:
         for i in df.index:
@@ -5315,6 +5399,48 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             add_log("V3_150이상그룹", idxs, modified, "상세단가/BA 총금액", " / ".join(before_lines), " / ".join(after_lines), f"1차 보정 후 V=3 동일 수취인+전화번호 그룹에 150불 이상 건 포함: 최고금액 HAWB {row_hawb(keep)} 1건 유지, 나머지 약 10불로 조정", modified[0])
     # ────────────────────────────────────────────────────────────────────────────
 
+    # 최종 금액 안전장치: 기존 금액 규칙을 모두 처리한 뒤 总金额이 1불 미만이면 최소 1불로 보정
+    # 상세 QTY는 유지하고 상세 단가를 비례 조정하며, 반올림 오차는 첫 상세품목 단가에 보정
+    ali_ht_min1_adjusted_count = 0
+    for i in df.index:
+        old_total = total_val(i)
+        if not (0 <= old_total < 1.0) or not detail_groups:
+            continue
+        active = []
+        for desc_col, qty_col, unit_col in detail_groups:
+            desc = ali_ht_clean_text(df.at[i, desc_col])
+            qty = qty_val(i, qty_col)
+            unit = ali_ht_to_number(df.at[i, unit_col])
+            if qty > 0 and (desc or unit > 0):
+                active.append((desc_col, qty_col, unit_col, qty, unit))
+        if not active:
+            continue
+        base = sum(max(unit, 0.0) * qty for _d, _q, _u, qty, unit in active)
+        before_units = [f"{ali_ht_clean_text(df.at[i,d])}: QTY {qty}, 단가 {unit}" for d,q,u,qty,unit in active]
+        if base > 0:
+            scale = 1.0 / base
+            for _d, _q, ucol, qty, unit in active:
+                new_unit = round(max(unit, 0.0) * scale, 6)
+                excel_set(i, ucol, new_unit)
+                money_changed_cells.add((i, ucol))
+        else:
+            _d, _q, ucol, qty, _unit = active[0]
+            new_unit = round(1.0 / qty, 6)
+            excel_set(i, ucol, new_unit)
+            money_changed_cells.add((i, ucol))
+        calc = sum(ali_ht_to_number(df.at[i, ucol]) * qty for _d, _q, ucol, qty, _unit in active)
+        residual = 1.0 - calc
+        if abs(residual) > 0.0000005:
+            _d0, _q0, u0, qty0, _unit0 = active[0]
+            corrected = round(ali_ht_to_number(df.at[i, u0]) + residual / qty0, 6)
+            excel_set(i, u0, corrected)
+            money_changed_cells.add((i, u0))
+        excel_set(i, col_total, 1.00)
+        money_changed_cells.add((i, col_total))
+        after_units = [f"{ali_ht_clean_text(df.at[i,d])}: QTY {qty}, 단가 {ali_ht_to_number(df.at[i,u])}" for d,q,u,qty,_unit in active]
+        add_log("1불미만보정", [i], [i], "상세QTY/단가/总金额", f"단가[{'; '.join(before_units)}], 총금액 {old_total}", f"단가[{'; '.join(after_units)}], 총금액 1.0", "최종 총금액이 1불 미만이어서 최소 1불로 보정", i)
+        ali_ht_min1_adjusted_count += 1
+
     # 최종 후처리: 전체 품명에 아래 문자열이 순서 그대로 연속 포함되면 V(용도구분)=3으로 변경
     # 예: TEA -> TEAPOT은 포함, SEAT은 미포함
     food_keywords = [
@@ -5409,6 +5535,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "V3 150~160불→143 단일건 보정": v3_150_adjusted_count,
         "V3 보정 후 150불 이상 포함 그룹 조정": v3_150_group_adjust_count,
         "품명 변경 셀 수": name_change_count,
+        "총금액 1불 미만→1불 보정": ali_ht_min1_adjusted_count,
         "말랑이 V=3 후처리 송장 수": squishy_change_count,
         "추가식품 V=3 후처리 송장 수": food_change_count,
         "추가전파 V=3 후처리 송장 수": radio_change_count,
