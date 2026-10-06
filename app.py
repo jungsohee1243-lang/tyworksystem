@@ -4154,6 +4154,38 @@ def meni_distribute_to_target(df, col_af, target_total):
 
 
 
+
+
+def count_hawb_carriers(series):
+    """HAWB NO 기준 택배사별 고유 운송장 건수를 집계합니다.
+    3=CJ, 5=한진, 7=천일택배, 9=V2V. 빈값은 제외합니다.
+    """
+    carrier_map = {
+        "3": "CJ",
+        "5": "한진",
+        "7": "천일택배",
+        "9": "V2V",
+    }
+    unique_hawbs = set()
+    for value in series:
+        if pd.isna(value):
+            continue
+        text = str(value).strip()
+        # 엑셀에서 숫자로 읽힌 운송장의 끝 .0만 제거
+        if re.fullmatch(r"\d+\.0", text):
+            text = text[:-2]
+        # 공백/하이픈 등 표시문자가 섞여도 첫 숫자를 기준으로 판별
+        text = re.sub(r"[^0-9A-Za-z]", "", text)
+        if text:
+            unique_hawbs.add(text)
+
+    counts = {name: 0 for name in carrier_map.values()}
+    for hawb in unique_hawbs:
+        carrier = carrier_map.get(hawb[0])
+        if carrier:
+            counts[carrier] += 1
+    return counts
+
 def normalize_meni_special_chars(value):
     """품명 컬럼에서만 é/É 문자를 e/E로 변경합니다."""
     if pd.isna(value):
@@ -4174,6 +4206,7 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     col_hawb  = meni_find_column_name(df.columns, "HAWB NO")
     col_tel   = meni_find_column_name(df.columns, "C/TEL")
     col_total = meni_find_column_name(df.columns, "总金额")
+    carrier_counts = count_hawb_carriers(df[col_hawb])
     try:
         col_name = meni_find_column_name(df.columns, "C/NAME", startswith=True)
     except Exception:
@@ -4700,6 +4733,10 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     output.seek(0)
 
     summary = {
+        "CJ(3 시작)": carrier_counts["CJ"],
+        "한진(5 시작)": carrier_counts["한진"],
+        "천일택배(7 시작)": carrier_counts["천일택배"],
+        "V2V(9 시작)": carrier_counts["V2V"],
         "원본 AF≤2": count_le2_orig,
         "분배 후 AF≤2": count_le2_after,
         "WIRELESS 변경": wireless_changed_cnt,
@@ -4874,6 +4911,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     col_tel = ali_ht_pick_column(df.columns, 14, ["C/TEL"])              # O
     col_addr = ali_ht_pick_column(df.columns, 11, ["C/ADDRESS", "KOR"], False)  # L
     col_total = ali_ht_pick_column(df.columns, 52, ["总金额"])            # BA
+    carrier_counts = count_hawb_carriers(df[col_hawb])
 
     col_pos = {col: idx + 1 for idx, col in enumerate(original_columns)}
 
@@ -5526,6 +5564,10 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     excluded_df = pd.DataFrame({"목록건에서 배제로 변경된 HAWB NO": excluded_from_list_hawbs})
 
     summary = {
+        "CJ(3 시작)": carrier_counts["CJ"],
+        "한진(5 시작)": carrier_counts["한진"],
+        "천일택배(7 시작)": carrier_counts["천일택배"],
+        "V2V(9 시작)": carrier_counts["V2V"],
         "전체 행": len(df),
         "V=1 대상 행": len(v1_indices),
         "150불 미만 수정제외 묶음": skipped_under_150_count,
