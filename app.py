@@ -4818,6 +4818,13 @@ ALI_HT_NAME_MAP = {
     "PUMPKIN SEEDS": "Seasoned PUMPKIN SEEDS",
 }
 
+# 알리 HT: 아래 단어가 품명에 포함되면 맨 앞에 Processed 추가
+ALI_HT_PROCESSED_PATTERN = re.compile(
+    r"(?<![A-Za-z])(?:CASHEW\s+NUTS|HAZELNUTS|MACADAMIA|PEANUTS|"
+    r"WALNUTS|SUNFLOWER|SEEDS|SEED|ALMOND|PECAN|KERNELS|NUTS)(?![A-Za-z])",
+    flags=re.I,
+)
+
 def ali_ht_norm_col(c):
     return re.sub(r"\s+", "", str(c)).upper()
 
@@ -5067,7 +5074,11 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                 continue
 
             before_norm = before.strip().lower()
-            after = name_map_norm.get(before_norm)
+            # Processed 규칙 우선: 이미 맨 앞에 Processed가 있으면 중복 추가하지 않음
+            if ALI_HT_PROCESSED_PATTERN.search(before):
+                after = before if re.match(r"^processed\b", before, flags=re.I) else "Processed " + before
+            else:
+                after = name_map_norm.get(before_norm)
 
             if not after:
                 has_dried = re.search(r"\bdried\b", before, flags=re.I) is not None
