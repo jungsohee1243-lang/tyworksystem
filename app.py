@@ -5502,6 +5502,7 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "TEA", "CANDY", "FRUIT", "CHOCOLATE", "MIXED NUT BERRY THIN BARS",
         "BLACK TEA LEAVES", "CHOCOLATE NUT THINS", "VEGETABLE PICKLES",
         "BISCUITS", "JASMINE", "HERBAL MEDICINE PILL", "COOKIE",
+        "COFFEE BEANS", "BISCUIT", "GRAIN BLEND", "LOLLIPOP",
     ]
     squishy_keywords = [
         "SQUEEZE TOY", "STRESS RELIEF TOY", "STRESS BALL", "STRESS RELIEF BALL", "STRESS",
