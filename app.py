@@ -5074,8 +5074,11 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
                 continue
 
             before_norm = before.strip().lower()
-            # Processed 규칙 우선: 이미 맨 앞에 Processed가 있으면 중복 추가하지 않음
-            if ALI_HT_PROCESSED_PATTERN.search(before):
+            # TEA 포함 품명은 Prepared 접두어를 붙임 (중복 방지).
+            # 기존 Processed 및 기타 품명 치환 규칙보다 우선 적용.
+            if "TEA" in before.upper():
+                after = before if re.match(r"^prepared\b", before, flags=re.I) else "Prepared " + before
+            elif ALI_HT_PROCESSED_PATTERN.search(before):
                 after = before if re.match(r"^processed\b", before, flags=re.I) else "Processed " + before
             else:
                 after = name_map_norm.get(before_norm)
@@ -5496,6 +5499,9 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         "NOODLE", "NOODLES", "RICE", "SAUCE", "SEASONING", "POWDER", "SOUP",
         "DRINK", "PASTE", "MILK", "DRIED", "PICKLED", "CAKE", "JELLY", "PASTRY",
         "BEVERAGE", "CHIPS", "PEANUT", "CORN", "BEEF", "INSTANT", "SNACK",
+        "TEA", "CANDY", "FRUIT", "CHOCOLATE", "MIXED NUT BERRY THIN BARS",
+        "BLACK TEA LEAVES", "CHOCOLATE NUT THINS", "VEGETABLE PICKLES",
+        "BISCUITS", "JASMINE", "HERBAL MEDICINE PILL", "COOKIE",
     ]
     squishy_keywords = [
         "SQUEEZE TOY", "STRESS RELIEF TOY", "STRESS BALL", "STRESS RELIEF BALL", "STRESS",
