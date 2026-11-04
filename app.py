@@ -4194,6 +4194,19 @@ def normalize_meni_special_chars(value):
         return value
     return value.replace("é", "e").replace("É", "E")
 
+def remove_unnecessary_blank_cells(workbook):
+    """예전에 용량 개선에 사용한 방식: 내용/서식/메모/링크 없는 빈 셀만 제거."""
+    removed = 0
+    from openpyxl.cell.cell import MergedCell
+    for sheet in workbook.worksheets:
+        for key, cell in list(sheet._cells.items()):
+            if isinstance(cell, MergedCell):
+                continue
+            if (cell.value is None or cell.value == "") and not cell.has_style and not cell.comment and not cell.hyperlink:
+                del sheet._cells[key]
+                removed += 1
+    return removed
+
 def meni_process_excel_to_bytes(uploaded_file, target_total=None):
     df = pd.read_excel(uploaded_file).astype("object")
 
@@ -4730,6 +4743,9 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
             memo[f"A{row}"] = h
             row += 1
 
+        # 이전 정상 작동 버전의 빈 셀 정리 기능 복원
+        remove_unnecessary_blank_cells(wb)
+
     output.seek(0)
 
     summary = {
@@ -4754,7 +4770,14 @@ def meni_process_excel_to_bytes(uploaded_file, target_total=None):
         "FTA 적용건": len(fta_hawb_list),
     }
 
-    return output.getvalue(), summary
+    # MENI 결과 파일도 HT와 동일하게 XLSX 내부 ZIP 압축률을 높입니다.
+    # 데이터, 셀 서식, 시트 구성은 변경하지 않고 ZIP 압축만 다시 적용합니다.
+    compressed_output = io.BytesIO()
+    with zipfile.ZipFile(io.BytesIO(output.getvalue()), "r") as source_zip:
+        with zipfile.ZipFile(compressed_output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as target_zip:
+            for member in source_zip.infolist():
+                target_zip.writestr(member, source_zip.read(member.filename), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+    return compressed_output.getvalue(), summary
 
 def meni_convert_page():
     topbar()
@@ -5076,9 +5099,21 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
             before_norm = before.strip().lower()
             # TEA 포함 품명은 Prepared 접두어를 붙임 (중복 방지).
             # 기존 Processed 및 기타 품명 치환 규칙보다 우선 적용.
-            if "TEA" in before.upper():
+            if "GOJI BERRIES" in before.upper():
+                # GOJI BERRIES: 품명 변경 없이 V(용도구분)만 3으로 설정.
+                v_before = ali_ht_clean_text(df.at[i, col_v])
+                if v_before != "3":
+                    excel_set(i, col_v, "3")
+                    v_changed_cells.add((i, col_v))
+                    add_log("V변경(GOJI BERRIES)", [i], [i], "V(용도구분)",
+                            v_before, "3", "GOJI BERRIES 포함 품명 V=3", i)
+                continue
+            if "CUMIN POWDER" in before.upper():
+                # CUMIN POWDER: 품명은 그대로 두고, 기존 POWDER 후처리에서 V=3만 적용.
+                after = before
+            elif "TEA" in before.upper():
                 after = before if re.match(r"^prepared\b", before, flags=re.I) else "Prepared " + before
-            elif ALI_HT_PROCESSED_PATTERN.search(before):
+            elif "BETAL" not in before.upper() and ALI_HT_PROCESSED_PATTERN.search(before):
                 after = before if re.match(r"^processed\b", before, flags=re.I) else "Processed " + before
             else:
                 after = name_map_norm.get(before_norm)
@@ -5637,9 +5672,11 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
     for cell in memo_ws[1]:
         cell.font = cell.font.copy(bold=True)
         cell.alignment = cell.alignment.copy(horizontal="center", vertical="center", wrap_text=True)
+    # 메모 시트의 빈 셀에는 새 스타일을 만들지 않아 결과 XLSX 팽창을 방지.
     for row in memo_ws.iter_rows():
         for cell in row:
-            cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
+            if cell.value is not None and cell.value != "":
+                cell.alignment = cell.alignment.copy(wrap_text=True, vertical="top")
     widths = {
         "A": 14, "B": 10, "C": 18, "D": 18, "E": 22, "F": 10,
         "G": 12, "H": 22, "I": 55, "J": 55, "K": 55, "L": 10,
@@ -5668,10 +5705,22 @@ def ali_ht_process_excel_to_bytes(uploaded_file):
         ex_ws.column_dimensions["A"].width = 28
         ex_ws["A1"].font = ex_ws["A1"].font.copy(bold=True)
 
+    # 과거 실제 사용하던 빈 셀 정리 방식을 알리 HT에도 동일하게 적용.
+    remove_unnecessary_blank_cells(wb)
+
+    # XLSX는 ZIP 압축 파일입니다. openpyxl 기본 저장 후 압축률을 높여
+    # 셀 값/서식/수식/시트 구성은 그대로 유지하며 결과 용량을 줄입니다.
     output = io.BytesIO()
     wb.save(output)
     output.seek(0)
-    return output.getvalue(), summary
+    compressed_output = io.BytesIO()
+    with zipfile.ZipFile(output, "r") as source_zip:
+        with zipfile.ZipFile(compressed_output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9, allowZip64=True) as target_zip:
+            for member in source_zip.infolist():
+                # 원본 ZIP 엔트리의 이름, 속성, 시간정보 등은 보존합니다.
+                target_zip.writestr(member, source_zip.read(member.filename), compress_type=zipfile.ZIP_DEFLATED, compresslevel=9)
+    compressed_output.seek(0)
+    return compressed_output.getvalue(), summary
 
 def ali_ht_convert_page():
     topbar()
